@@ -91,6 +91,93 @@ The runtime follows Claude-style memory layering:
 - cached lightweight prompt injection on normal turns
 - explicit deep retrieval through Honcho tools
 
+## OpenCode to Honcho Mapping
+
+### Config Mapping
+
+- Global user-wide config: `~/.config/opencode/honcho.json`
+- Project overrides: `.opencode/honcho.json`
+- Fallback environment: `HONCHO_API_KEY`, `HONCHO_BASE_URL`, `HONCHO_PEER_NAME`, `HONCHO_WORKSPACE`
+
+Effective precedence is:
+
+1. project `.opencode/honcho.json`
+2. global `~/.config/opencode/honcho.json`
+3. environment
+4. built defaults
+
+### Workspace Mapping
+
+- `workspace` maps to the Honcho workspace namespace
+- Prefer top-level `workspace` when `globalOverride` is enabled
+- Otherwise prefer `hosts.opencode.workspace`
+- Fall back to repo- or project-derived workspace only when no explicit workspace is configured
+
+This makes OpenCode align more closely with Claude Code's host-aware workspace model while still allowing per-project overrides.
+
+### Peer Mapping
+
+- `peerName` maps to the human user peer
+- `aiPeer` maps to the root OpenCode agent peer
+- Child OpenCode agents map to child Honcho agent peers
+- Parent OpenCode agents can be attached as observer peers in child-agent contexts
+
+Default peer observation semantics are:
+
+- user peer: `observeMe=true`, `observeOthers=false`
+- root agent peer: `observeMe=true`, `observeOthers=true`
+- child agent peer: `observeMe=true`, `observeOthers=true`
+- parent observer peer: `observeMe=false`, `observeOthers=true`
+
+### Session Mapping
+
+- `sessionStrategy=per-repo`: one stable Honcho session per workspace and agent lineage
+- `sessionStrategy=per-directory`: one stable Honcho session per working directory and agent lineage
+- `sessionStrategy=per-session`: one Honcho session per OpenCode session id
+- `sessionStrategy=global`: one long-lived Honcho session for the configured workspace
+
+Sessions are enabled by default. The default strategy is `per-repo`.
+
+### Hook Mapping
+
+- `event`: session lifecycle, warmup, and cleanup
+- `chat.message`: observe user messages and trigger durable write heuristics
+- `tool.execute.after`: observe tool outputs and trigger durable write heuristics
+- `experimental.chat.system.transform`: inject cached Honcho prompt memory
+- `experimental.session.compacting`: preserve continuity across compaction
+- `shell.env`: expose resolved Honcho env into shell context
+
+### Tool and Command Mapping
+
+OpenCode-native tools provided by the runtime:
+
+- `honcho_setup`
+- `honcho_status`
+- `honcho_get_config`
+- `honcho_set_config`
+- `honcho_search`
+- `honcho_chat`
+- `honcho_create_conclusion`
+
+Expected OpenCode command layer from the emitted bundle:
+
+- `/honcho:setup`
+- `/honcho:status`
+- `/honcho:settings`
+- `/honcho:set`
+- `/honcho:unset`
+- `/honcho:mode`
+- `/honcho:write`
+- `/honcho:interview`
+
+### Memory Layering
+
+The runtime follows a Claude-style layering model:
+
+- session-start deep warmup for stable user, agent, and summary context
+- cached lightweight prompt injection on normal turns
+- explicit deep retrieval through Honcho tools when more context is needed
+
 ## Publishing
 
 This repo is the npm package surface that should be published as `@plasticlabs/opencode-honcho`.
