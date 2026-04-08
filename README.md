@@ -139,9 +139,11 @@ Default peer observation semantics are:
 - `sessionStrategy=per-repo`: one stable Honcho session per workspace and agent lineage
 - `sessionStrategy=per-directory`: one stable Honcho session per working directory and agent lineage
 - `sessionStrategy=per-session`: one Honcho session per OpenCode session id
+- `sessionStrategy=chat-instance`: Claude Code-style alias for one Honcho session per OpenCode session id
+- `sessionStrategy=git-branch`: Claude Code-style branch-scoped session key when the current git branch is available, with repo-name fallback when it is not
 - `sessionStrategy=global`: one long-lived Honcho session for the configured workspace
 
-Sessions are enabled by default. The default strategy is `per-repo`.
+Sessions are enabled by default. The default strategy is `per-directory`.
 
 ### Hook Mapping
 
