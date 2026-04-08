@@ -70,5 +70,6 @@ export declare const createHonchoRuntimePlugin: ({ configPath }?: RuntimePluginO
 export declare const HonchoRuntimePlugin: Plugin;
 export declare const __testing: {
     buildPeerTopology: (handle: Pick<RuntimeHandle, "userPeerId" | "rootAgentPeerId" | "activeAgentPeerId" | "childAgentPeerId" | "parentAgentObserverPeerId">) => PeerTopology;
+    normalizeId: (value: string) => string;
 };
 export default HonchoRuntimePlugin;

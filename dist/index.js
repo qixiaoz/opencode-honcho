@@ -109,10 +109,18 @@ const TECH_TERM_PATTERN = /\b(react|vue|svelte|angular|fastapi|django|flask|post
 const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 const expandEnv = (value) => value.replace(/\$\{([^}]+)\}/g, (_, key) => process.env[key] ?? "");
 const clampText = (value, maxChars) => value.length > maxChars ? `${value.slice(0, Math.max(0, maxChars - 3))}...` : value;
-const normalizeId = (value) => value
-    .toLowerCase()
-    .replace(/[^a-z0-9:_-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "default";
+const trimHyphenEdges = (value) => {
+    let start = 0;
+    let end = value.length;
+    while (start < end && value[start] === "-") {
+        start += 1;
+    }
+    while (end > start && value[end - 1] === "-") {
+        end -= 1;
+    }
+    return value.slice(start, end);
+};
+const normalizeId = (value) => trimHyphenEdges(value.toLowerCase().replace(/[^a-z0-9:_-]+/g, "-")) || "default";
 const isLocalBaseUrl = (value) => {
     if (!value.trim())
         return false;
@@ -1090,5 +1098,6 @@ export const createHonchoRuntimePlugin = ({ configPath } = {}) => async (pluginI
 export const HonchoRuntimePlugin = createHonchoRuntimePlugin();
 export const __testing = {
     buildPeerTopology,
+    normalizeId,
 };
 export default HonchoRuntimePlugin;

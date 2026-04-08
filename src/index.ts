@@ -225,11 +225,20 @@ const expandEnv = (value: string) =>
 const clampText = (value: string, maxChars: number) =>
   value.length > maxChars ? `${value.slice(0, Math.max(0, maxChars - 3))}...` : value
 
+const trimHyphenEdges = (value: string) => {
+  let start = 0
+  let end = value.length
+  while (start < end && value[start] === "-") {
+    start += 1
+  }
+  while (end > start && value[end - 1] === "-") {
+    end -= 1
+  }
+  return value.slice(start, end)
+}
+
 const normalizeId = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9:_-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "default"
+  trimHyphenEdges(value.toLowerCase().replace(/[^a-z0-9:_-]+/g, "-")) || "default"
 
 const isLocalBaseUrl = (value: string) => {
   if (!value.trim()) return false
@@ -1409,5 +1418,6 @@ export const createHonchoRuntimePlugin =
 export const HonchoRuntimePlugin = createHonchoRuntimePlugin()
 export const __testing = {
   buildPeerTopology,
+  normalizeId,
 }
 export default HonchoRuntimePlugin
