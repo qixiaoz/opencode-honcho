@@ -28,6 +28,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test tests/**/*.test.js",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "zod": "4.0.0"
   },
   "devDependencies": {
+    "@types/node": "^22.13.9",
     "typescript": "^5.9.3"
   }
 }

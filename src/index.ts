@@ -61,6 +61,7 @@ type RuntimeHandle = {
   sessionKey: string
   userPeerId: string
   rootAgentPeerId: string
+  activeAgentPeerId: string
   childAgentPeerId: string | null
   parentAgentObserverPeerId: string | null
 }
@@ -81,6 +82,24 @@ type SessionState = {
   promptCount: number
   lastPromptRefreshAt: number | null
   lastTopicKey: string | null
+}
+
+type PeerDescription = {
+  id: string
+  observeMe: boolean
+  observeOthers: boolean
+  sessionScoped?: boolean
+  modelsOnly?: string[]
+}
+
+type PeerTopology = {
+  sessionPeerConfigs: Record<string, { observeMe: boolean; observeOthers: boolean }>
+  describedPeers: {
+    userPeer: PeerDescription
+    rootAgentPeer: PeerDescription
+    childAgentPeer: PeerDescription | null
+    parentAgentObserverPeer: PeerDescription | null
+  }
 }
 
 const SETTINGS_FILE_NAME = "honcho.json"
@@ -206,11 +225,32 @@ const expandEnv = (value: string) =>
 const clampText = (value: string, maxChars: number) =>
   value.length > maxChars ? `${value.slice(0, Math.max(0, maxChars - 3))}...` : value
 
+const trimHyphenEdges = (value: string) => {
+  let start = 0
+  let end = value.length
+  while (start < end && value[start] === "-") {
+    start += 1
+  }
+  while (end > start && value[end - 1] === "-") {
+    end -= 1
+  }
+  return value.slice(start, end)
+}
+
 const normalizeId = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9:_-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "default"
+  trimHyphenEdges(value.toLowerCase().replace(/[^a-z0-9:_-]+/g, "-")) || "default"
+
+const isLocalBaseUrl = (value: string) => {
+  if (!value.trim()) return false
+  try {
+    const url = new URL(value)
+    return ["localhost", "127.0.0.1", "::1"].includes(url.hostname)
+  } catch {
+    return false
+  }
+}
+
+const hasConfiguredAuth = (settings: HonchoSettings) => Boolean(settings.apiKey) || isLocalBaseUrl(settings.baseUrl)
 
 const readTextPart = (part: unknown) =>
   isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : null
@@ -291,7 +331,7 @@ const applyRawLayer = (target: HonchoSettings, raw: Record<string, unknown>) => 
         if (refreshValue === undefined || refreshValue === null) {
           continue
         }
-        target.contextRefresh[refreshKey] = refreshValue
+        ;(target.contextRefresh as Record<string, unknown>)[refreshKey] = refreshValue
       }
       continue
     }
@@ -467,12 +507,13 @@ const lookupField = (payload: Record<string, unknown>, field: string) =>
   }, payload)
 
 const extractSessionId = (input: Record<string, unknown> | undefined) => {
+  const eventProperties = isRecord(input?.event) && isRecord(input.event.properties) ? input.event.properties : undefined
   const value =
     input?.sessionID ??
     input?.sessionId ??
     input?.session_id ??
-    (isRecord(input?.event) ? input.event.properties : undefined)?.sessionID ??
-    (isRecord(input?.event) ? input.event.properties : undefined)?.sessionId
+    eventProperties?.sessionID ??
+    eventProperties?.sessionId
   return typeof value === "string" && value.length > 0 ? value : "unknown-session"
 }
 
@@ -485,7 +526,7 @@ const deriveProjectRoot = (
     return path.dirname(path.dirname(absolute))
   }
 
-  const hints = [pluginInput.directory, pluginInput.worktree, pluginInput.project?.path].filter(
+  const hints = [pluginInput.directory, pluginInput.worktree, pluginInput.project?.worktree].filter(
     (value): value is string => Boolean(value),
   )
   for (const hint of hints) {
@@ -501,7 +542,7 @@ const deriveProjectRoot = (
       current = parent
     }
   }
-  return path.resolve(pluginInput.directory || pluginInput.worktree || pluginInput.project?.path || process.cwd())
+  return path.resolve(pluginInput.directory || pluginInput.worktree || pluginInput.project?.worktree || process.cwd())
 }
 
 const configFileForRoot = (rootDir: string, configPathOverride?: string) =>
@@ -562,7 +603,6 @@ const deriveAgentLabel = (input: Record<string, unknown> | undefined, pluginInpu
     isRecord(input?.agent) ? input.agent.id : undefined,
     isRecord(input?.agent) ? input.agent.name : undefined,
     pluginInput.project?.id,
-    pluginInput.project?.name,
     "root",
   ]
   const match = candidates.find((candidate) => typeof candidate === "string" && candidate.length > 0)
@@ -589,12 +629,14 @@ const deriveRuntimeHandle = async (
   const { configPath, globalConfigPath, settings } = await resolveSettings(rootDir, configPathOverride)
   const sessionId = extractSessionId(input)
   const repoName = path.basename(rootDir)
-  const workspaceId = normalizeId(settings.workspace || pluginInput.project?.name || pluginInput.project?.id || repoName)
+  const workspaceId = normalizeId(settings.workspace || pluginInput.project?.id || repoName)
   const userPeerId = normalizeId(`user:${settings.peerName || currentUserName()}`)
   const agentLabel = deriveAgentLabel(input, pluginInput)
   const parentAgentLabel = deriveParentAgentLabel(input)
-  const rootAgentPeerId = normalizeId(settings.aiPeer || `opencode:${agentLabel}`)
-  const childAgentPeerId = parentAgentLabel && parentAgentLabel !== agentLabel ? rootAgentPeerId : null
+  const childAgentPeerId =
+    parentAgentLabel && parentAgentLabel !== agentLabel ? normalizeId(`opencode:${agentLabel}`) : null
+  const rootAgentPeerId = normalizeId(settings.aiPeer || (childAgentPeerId ? "opencode" : `opencode:${agentLabel}`))
+  const activeAgentPeerId = childAgentPeerId ?? rootAgentPeerId
   const parentAgentObserverPeerId = parentAgentLabel ? normalizeId(`opencode:${parentAgentLabel}`) : null
 
   let sessionScope = workspaceId
@@ -609,7 +651,7 @@ const deriveRuntimeHandle = async (
     sessionScope = `${workspaceId}:${normalizeId(repoName)}`
   }
 
-  const lineage = [rootAgentPeerId]
+  const lineage = [activeAgentPeerId]
   if (parentAgentObserverPeerId && parentAgentObserverPeerId !== rootAgentPeerId) {
     lineage.unshift(parentAgentObserverPeerId)
   }
@@ -624,8 +666,71 @@ const deriveRuntimeHandle = async (
     sessionKey: normalizeId(`${settings.sessionStrategy}:${sessionScope}:${lineage.join(":")}`),
     userPeerId,
     rootAgentPeerId,
+    activeAgentPeerId,
     childAgentPeerId,
     parentAgentObserverPeerId,
+  }
+}
+
+const buildPeerTopology = (handle: Pick<
+  RuntimeHandle,
+  "userPeerId" | "rootAgentPeerId" | "activeAgentPeerId" | "childAgentPeerId" | "parentAgentObserverPeerId"
+>): PeerTopology => {
+  const userPeer: PeerDescription = {
+    id: handle.userPeerId,
+    observeMe: true,
+    observeOthers: false,
+  }
+  const rootAgentPeer: PeerDescription = {
+    id: handle.rootAgentPeerId,
+    observeMe: true,
+    observeOthers: true,
+  }
+  const childAgentPeer =
+    handle.childAgentPeerId === null
+      ? null
+      : {
+          id: handle.childAgentPeerId,
+          observeMe: true,
+          observeOthers: false,
+          sessionScoped: true,
+        }
+  const parentAgentObserverPeer =
+    handle.parentAgentObserverPeerId === null
+      ? null
+      : {
+          id: handle.parentAgentObserverPeerId,
+          observeMe: false,
+          observeOthers: true,
+          modelsOnly: childAgentPeer ? [childAgentPeer.id] : [],
+        }
+
+  if (childAgentPeer && parentAgentObserverPeer) {
+    return {
+      sessionPeerConfigs: {
+        [childAgentPeer.id]: { observeMe: true, observeOthers: false },
+        [parentAgentObserverPeer.id]: { observeMe: false, observeOthers: true },
+      },
+      describedPeers: {
+        userPeer,
+        rootAgentPeer,
+        childAgentPeer,
+        parentAgentObserverPeer,
+      },
+    }
+  }
+
+  return {
+    sessionPeerConfigs: {
+      [userPeer.id]: { observeMe: true, observeOthers: false },
+      [rootAgentPeer.id]: { observeMe: true, observeOthers: true },
+    },
+    describedPeers: {
+      userPeer,
+      rootAgentPeer,
+      childAgentPeer: null,
+      parentAgentObserverPeer: null,
+    },
   }
 }
 
@@ -643,22 +748,11 @@ const createActiveRuntime = async (
   const userPeer = await honcho.peer(handle.userPeerId, {
     configuration: { observeMe: true },
   })
-  const agentPeer = await honcho.peer(handle.rootAgentPeerId, {
+  const agentPeer = await honcho.peer(handle.activeAgentPeerId, {
     configuration: { observeMe: true },
   })
   const session = await honcho.session(handle.sessionKey)
-  await session.addPeers({
-    [handle.userPeerId]: { observeMe: true, observeOthers: false },
-    [handle.rootAgentPeerId]: { observeMe: true, observeOthers: true },
-    ...(handle.parentAgentObserverPeerId
-      ? {
-          [handle.parentAgentObserverPeerId]: {
-            observeMe: false,
-            observeOthers: true,
-          },
-        }
-      : {}),
-  })
+  await session.addPeers(buildPeerTopology(handle).sessionPeerConfigs as never)
   return { ...handle, honcho, session, userPeer, agentPeer }
 }
 
@@ -687,34 +781,7 @@ const extractPromptQuery = (input: Record<string, unknown> | undefined) => {
   return extractText(input.parts)
 }
 
-const describePeers = (handle: RuntimeHandle) => ({
-  userPeer: {
-    id: handle.userPeerId,
-    observeMe: true,
-    observeOthers: false,
-  },
-  rootAgentPeer: {
-    id: handle.rootAgentPeerId,
-    observeMe: true,
-    observeOthers: true,
-  },
-  childAgentPeer:
-    handle.childAgentPeerId === null
-      ? null
-      : {
-          id: handle.childAgentPeerId,
-          observeMe: true,
-          observeOthers: true,
-        },
-  parentAgentObserverPeer:
-    handle.parentAgentObserverPeerId === null
-      ? null
-      : {
-          id: handle.parentAgentObserverPeerId,
-          observeMe: false,
-          observeOthers: true,
-        },
-})
+const describePeers = (handle: RuntimeHandle) => buildPeerTopology(handle).describedPeers
 
 const createSessionState = (): SessionState => ({
   stableContext: null,
@@ -726,6 +793,50 @@ const createSessionState = (): SessionState => ({
   lastPromptRefreshAt: null,
   lastTopicKey: null,
 })
+
+type SearchToolResult =
+  | {
+      ok: true
+      workspace: string
+      sessionKey: string
+      items: { id: string; peerId: string; content: string }[]
+    }
+  | {
+      ok: false
+      workspace?: string
+      sessionKey?: string
+      items: { id: string; peerId: string; content: string }[]
+      error: string
+    }
+
+type ChatToolResult =
+  | {
+      ok: true
+      workspace: string
+      sessionKey: string
+      response: string
+    }
+  | {
+      ok: false
+      workspace?: string
+      sessionKey?: string
+      response: string | null
+      error: string
+    }
+
+type ConclusionToolResult =
+  | {
+      ok: boolean
+      workspace: string
+      sessionKey: string
+      content: string
+    }
+  | {
+      ok: false
+      workspace?: string
+      sessionKey?: string
+      error: string
+    }
 
 const appendConclusion = (state: SessionState, content: string) => {
   state.recentConclusions.unshift(content)
@@ -768,11 +879,12 @@ export const createHonchoRuntimePlugin =
       if (!handle.config.enabled) {
         return fallback
       }
-      if (!handle.config.apiKey) {
-        await log("warn", "Honcho runtime is enabled but HONCHO_API_KEY is unavailable.", {
+      if (!hasConfiguredAuth(handle.config)) {
+        await log("warn", "Honcho runtime is enabled but neither an API key nor a localhost baseUrl is configured.", {
           configPath: handle.configPath,
           globalConfigPath: handle.globalConfigPath,
           workspaceId: handle.workspaceId,
+          baseUrl: handle.config.baseUrl,
         })
         return fallback
       }
@@ -808,7 +920,9 @@ export const createHonchoRuntimePlugin =
         linkedHosts: handle.config.linkedHosts,
         saveMessages: handle.config.saveMessages,
         contextRefresh: handle.config.contextRefresh,
-        configured: Boolean(handle.config.apiKey),
+        configured: hasConfiguredAuth(handle.config),
+        localMode: isLocalBaseUrl(handle.config.baseUrl),
+        baseUrl: handle.config.baseUrl,
         peers: describePeers(handle),
         recentConclusions: state.recentConclusions,
         stableContext: state.stableContext,
@@ -921,7 +1035,7 @@ export const createHonchoRuntimePlugin =
       })
       const compiled = formatPromptContextBlock(
         parseSessionSummary(sessionContext.summary),
-        parseRepresentation(sessionContext.representation),
+        parseRepresentation(sessionContext.peerRepresentation),
       )
       state.cachedPromptContext = compiled || null
       state.lastPromptRefreshAt = Date.now()
@@ -990,20 +1104,18 @@ export const createHonchoRuntimePlugin =
         if (!command.startsWith("honcho:") && !command.startsWith("honcho-")) {
           return
         }
-        output.metadata ??= {}
-        output.metadata.honcho = {
-          controlPlane: true,
-          projectSettings: true,
-        }
+        output.parts = output.parts || []
       },
       "shell.env": async (input, output) => {
         const handle = await deriveRuntimeHandle(pluginInput, input, configPath)
-        output.env.HONCHO_API_KEY = handle.config.apiKey
+        if (handle.config.apiKey) {
+          output.env.HONCHO_API_KEY = handle.config.apiKey
+        }
         output.env.HONCHO_URL = handle.config.baseUrl
         output.env.HONCHO_WORKSPACE_ID = handle.workspaceId
       },
-      "chat.message": async (input) => {
-        const message = extractText(input.parts)
+      "chat.message": async (input, output) => {
+        const message = extractText(output.parts)
         if (!message || message.startsWith("/")) {
           return
         }
@@ -1024,7 +1136,7 @@ export const createHonchoRuntimePlugin =
       },
       "experimental.chat.system.transform": async (input, output) => {
         const handle = await deriveRuntimeHandle(pluginInput, input, configPath)
-        if (!handle.config.enabled || handle.config.recallMode === "tools" || !handle.config.apiKey) {
+        if (!handle.config.enabled || handle.config.recallMode === "tools" || !hasConfiguredAuth(handle.config)) {
           return
         }
         const query = extractPromptQuery(input)
@@ -1067,8 +1179,11 @@ export const createHonchoRuntimePlugin =
             `Write frequency: ${handle.config.writeFrequency}`,
             `User peer: ${handle.userPeerId} (observeMe=true, observeOthers=false)`,
             `Root agent peer: ${handle.rootAgentPeerId} (observeMe=true, observeOthers=true)`,
+            handle.childAgentPeerId
+              ? `Child agent peer: ${handle.childAgentPeerId} (observeMe=true, observeOthers=false, sessionScoped=true)`
+              : "Child agent peer: none",
             handle.parentAgentObserverPeerId
-              ? `Parent observer peer: ${handle.parentAgentObserverPeerId} (observeMe=false, observeOthers=true)`
+              ? `Parent observer peer: ${handle.parentAgentObserverPeerId} (observeMe=false, observeOthers=true, modelsOnly=${handle.childAgentPeerId || "none"})`
               : "Parent observer peer: none",
             state.lastInjectedContext ? `Last injected memory:\n${state.lastInjectedContext}` : "Last injected memory: none",
             state.recentConclusions.length > 0
@@ -1077,21 +1192,13 @@ export const createHonchoRuntimePlugin =
           ].join("\n"),
         )
       },
-      "tool.execute.before": async (input, output) => {
-        output.metadata ??= {}
-        output.metadata.honcho = {
-          observed: true,
-        }
+      "tool.execute.before": async (_input, output) => {
+        output.args = output.args
       },
-      "tool.execute.after": async (input) => {
+      "tool.execute.after": async (input, output) => {
         await withRuntime(input, async (runtime) => {
           const toolName = typeof input.tool === "string" ? input.tool : "unknown-tool"
-          const resultText =
-            typeof input.result === "string"
-              ? input.result
-              : typeof input.output === "string"
-                ? input.output
-                : ""
+          const resultText = typeof output.output === "string" ? output.output : ""
           if (!resultText.trim()) {
             return
           }
@@ -1121,7 +1228,7 @@ export const createHonchoRuntimePlugin =
         }),
         honcho_setup: tool({
           description:
-            "Validate Honcho setup for OpenCode and persist a shared API key to ~/.config/opencode/honcho.json for all future projects when provided.",
+            "Validate Honcho setup for OpenCode and persist shared Honcho credentials or a localhost baseUrl to ~/.config/opencode/honcho.json for all future projects when provided.",
           args: {
             apiKey: tool.schema.string().optional(),
             baseUrl: tool.schema.string().optional(),
@@ -1164,12 +1271,14 @@ export const createHonchoRuntimePlugin =
 
             return JSON.stringify(
               {
-                ok: Boolean(effectiveApiKey),
+                ok: Boolean(effectiveApiKey) || isLocalBaseUrl(providedBaseUrl || handle.config.baseUrl),
                 globalConfigPath: handle.globalConfigPath,
                 persistedFields,
                 message: effectiveApiKey
                   ? "Honcho setup is ready."
-                  : "No Honcho API key is configured. Pass one to /honcho:setup <key> or set HONCHO_API_KEY before running setup.",
+                  : isLocalBaseUrl(providedBaseUrl || handle.config.baseUrl)
+                    ? "Honcho setup is ready for local mode."
+                    : "No Honcho API key is configured. Pass one to /honcho:setup <key> or set HONCHO_API_KEY before running setup. For a local Honcho instance, set baseUrl to http://127.0.0.1:8000 or http://localhost:8000.",
                 status: await runtimeStatus({ sessionID: context.sessionID }),
               },
               null,
@@ -1229,7 +1338,7 @@ export const createHonchoRuntimePlugin =
           },
           async execute(args, context) {
             return JSON.stringify(
-              await withRuntime(
+              await withRuntime<SearchToolResult>(
                 { ...args, sessionID: context.sessionID },
                 async (runtime) => {
                   const messages = await runtime.session.search(args.query, {
@@ -1258,7 +1367,7 @@ export const createHonchoRuntimePlugin =
           args: { query: tool.schema.string() },
           async execute(args, context) {
             return JSON.stringify(
-              await withRuntime(
+              await withRuntime<ChatToolResult>(
                 { ...args, sessionID: context.sessionID },
                 async (runtime) => ({
                   ok: true,
@@ -1283,7 +1392,7 @@ export const createHonchoRuntimePlugin =
           args: { content: tool.schema.string() },
           async execute(args, context) {
             return JSON.stringify(
-              await withRuntime(
+              await withRuntime<ConclusionToolResult>(
                 { ...args, sessionID: context.sessionID },
                 async (runtime) => {
                   const content = clampText(args.content.trim(), runtime.config.dialecticMaxChars)
@@ -1307,4 +1416,8 @@ export const createHonchoRuntimePlugin =
   }
 
 export const HonchoRuntimePlugin = createHonchoRuntimePlugin()
+export const __testing = {
+  buildPeerTopology,
+  normalizeId,
+}
 export default HonchoRuntimePlugin
