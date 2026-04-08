@@ -21,8 +21,9 @@ const DEFAULT_SETTINGS = {
     linkedHosts: [],
     recallMode: "hybrid",
     observation: "directional",
+    peerModel: "classic",
     writeFrequency: "async",
-    sessionStrategy: "per-repo",
+    sessionStrategy: "per-directory",
     dialecticReasoningLevel: "low",
     dialecticDynamic: true,
     dialecticMaxChars: 600,
@@ -48,7 +49,8 @@ const NUMBER_KEYS = new Set([
 const ENUM_KEYS = {
     recallMode: new Set(["hybrid", "context", "tools"]),
     observation: new Set(["directional", "unified"]),
-    sessionStrategy: new Set(["per-repo", "per-directory", "per-session", "global"]),
+    peerModel: new Set(["classic", "hierarchical"]),
+    sessionStrategy: new Set(["per-repo", "per-directory", "per-session", "global", "git-branch", "chat-instance"]),
     dialecticReasoningLevel: new Set(["minimal", "low", "medium", "high", "max"]),
 };
 const INHERITABLE_STRING_KEYS = new Set(["apiKey", "baseUrl", "peerName", "aiPeer", "workspace"]);
@@ -63,6 +65,7 @@ const TOP_LEVEL_SETTING_FIELDS = new Set([
     "linkedHosts",
     "recallMode",
     "observation",
+    "peerModel",
     "writeFrequency",
     "sessionStrategy",
     "dialecticReasoningLevel",
@@ -82,6 +85,7 @@ const SETTING_FIELD_PATHS = new Set([
     "globalOverride",
     "recallMode",
     "observation",
+    "peerModel",
     "writeFrequency",
     "sessionStrategy",
     "dialecticReasoningLevel",
@@ -451,6 +455,55 @@ const deriveParentAgentLabel = (input) => {
     const match = candidates.find((candidate) => typeof candidate === "string" && candidate.length > 0);
     return typeof match === "string" ? match : null;
 };
+const resolveGitDir = async (rootDir) => {
+    const directGitDir = path.join(rootDir, ".git");
+    try {
+        const statTarget = await readFile(directGitDir, "utf-8");
+        const prefix = "gitdir:";
+        if (statTarget.trim().startsWith(prefix)) {
+            const relativeGitDir = statTarget.trim().slice(prefix.length).trim();
+            return path.resolve(rootDir, relativeGitDir);
+        }
+    }
+    catch {
+        if (existsSync(directGitDir)) {
+            return directGitDir;
+        }
+    }
+    return existsSync(directGitDir) ? directGitDir : null;
+};
+const deriveGitBranchLabel = async (rootDir) => {
+    const gitDir = await resolveGitDir(rootDir);
+    if (!gitDir)
+        return null;
+    try {
+        const head = (await readFile(path.join(gitDir, "HEAD"), "utf-8")).trim();
+        const branchPrefix = "ref: refs/heads/";
+        if (head.startsWith(branchPrefix)) {
+            return normalizeId(head.slice(branchPrefix.length));
+        }
+    }
+    catch {
+        return null;
+    }
+    return null;
+};
+const deriveSessionScope = async ({ workspaceId, sessionStrategy, rootDir, repoName, currentDirectory, sessionId, }) => {
+    if (sessionStrategy === "per-directory") {
+        return `${workspaceId}:${normalizeId(path.basename(currentDirectory))}`;
+    }
+    if (sessionStrategy === "per-session" || sessionStrategy === "chat-instance") {
+        return `${workspaceId}:${normalizeId(sessionId)}`;
+    }
+    if (sessionStrategy === "global") {
+        return `${workspaceId}:global`;
+    }
+    if (sessionStrategy === "git-branch") {
+        const branchLabel = await deriveGitBranchLabel(rootDir);
+        return `${workspaceId}:${branchLabel || normalizeId(repoName)}`;
+    }
+    return `${workspaceId}:${normalizeId(repoName)}`;
+};
 const deriveRuntimeHandle = async (pluginInput, input, configPathOverride) => {
     const rootDir = deriveProjectRoot(pluginInput, configPathOverride);
     const { configPath, globalConfigPath, settings } = await resolveSettings(rootDir, configPathOverride);
@@ -460,24 +513,21 @@ const deriveRuntimeHandle = async (pluginInput, input, configPathOverride) => {
     const userPeerId = normalizeId(`user:${settings.peerName || currentUserName()}`);
     const agentLabel = deriveAgentLabel(input, pluginInput);
     const parentAgentLabel = deriveParentAgentLabel(input);
-    const childAgentPeerId = parentAgentLabel && parentAgentLabel !== agentLabel ? normalizeId(`opencode:${agentLabel}`) : null;
-    const rootAgentPeerId = normalizeId(settings.aiPeer || (childAgentPeerId ? "opencode" : `opencode:${agentLabel}`));
+    const childAgentPeerId = settings.peerModel === "hierarchical" && parentAgentLabel && parentAgentLabel !== agentLabel
+        ? normalizeId(`opencode:${agentLabel}`)
+        : null;
+    const rootAgentPeerId = normalizeId(settings.aiPeer || "opencode");
     const activeAgentPeerId = childAgentPeerId ?? rootAgentPeerId;
-    const parentAgentObserverPeerId = parentAgentLabel ? normalizeId(`opencode:${parentAgentLabel}`) : null;
-    let sessionScope = workspaceId;
-    if (settings.sessionStrategy === "per-directory") {
-        const cwd = pluginInput.directory || pluginInput.worktree || rootDir;
-        sessionScope = `${workspaceId}:${normalizeId(path.basename(cwd))}`;
-    }
-    else if (settings.sessionStrategy === "per-session") {
-        sessionScope = `${workspaceId}:${normalizeId(sessionId)}`;
-    }
-    else if (settings.sessionStrategy === "global") {
-        sessionScope = `${workspaceId}:global`;
-    }
-    else {
-        sessionScope = `${workspaceId}:${normalizeId(repoName)}`;
-    }
+    const parentAgentObserverPeerId = settings.peerModel === "hierarchical" && parentAgentLabel ? normalizeId(`opencode:${parentAgentLabel}`) : null;
+    const cwd = pluginInput.directory || pluginInput.worktree || rootDir;
+    const sessionScope = await deriveSessionScope({
+        workspaceId,
+        sessionStrategy: settings.sessionStrategy,
+        rootDir,
+        repoName,
+        currentDirectory: cwd,
+        sessionId,
+    });
     const lineage = [activeAgentPeerId];
     if (parentAgentObserverPeerId && parentAgentObserverPeerId !== rootAgentPeerId) {
         lineage.unshift(parentAgentObserverPeerId);
@@ -524,7 +574,7 @@ const buildPeerTopology = (handle) => {
             observeOthers: true,
             modelsOnly: childAgentPeer ? [childAgentPeer.id] : [],
         };
-    if (childAgentPeer && parentAgentObserverPeer) {
+    if (handle.config.peerModel === "hierarchical" && childAgentPeer && parentAgentObserverPeer) {
         return {
             sessionPeerConfigs: {
                 [childAgentPeer.id]: { observeMe: true, observeOthers: false },
@@ -679,6 +729,7 @@ export const createHonchoRuntimePlugin = ({ configPath } = {}) => async (pluginI
             linkedHosts: handle.config.linkedHosts,
             saveMessages: handle.config.saveMessages,
             contextRefresh: handle.config.contextRefresh,
+            peerModel: handle.config.peerModel,
             configured: hasConfiguredAuth(handle.config),
             localMode: isLocalBaseUrl(handle.config.baseUrl),
             baseUrl: handle.config.baseUrl,
@@ -896,6 +947,7 @@ export const createHonchoRuntimePlugin = ({ configPath } = {}) => async (pluginI
                 `Workspace: ${handle.workspaceId}`,
                 `Session key: ${handle.sessionKey}`,
                 `Recall mode: ${handle.config.recallMode}`,
+                `Peer model: ${handle.config.peerModel}`,
                 `Write frequency: ${handle.config.writeFrequency}`,
                 `User peer: ${handle.userPeerId} (observeMe=true, observeOthers=false)`,
                 `Root agent peer: ${handle.rootAgentPeerId} (observeMe=true, observeOthers=true)`,
@@ -1098,6 +1150,8 @@ export const createHonchoRuntimePlugin = ({ configPath } = {}) => async (pluginI
 export const HonchoRuntimePlugin = createHonchoRuntimePlugin();
 export const __testing = {
     buildPeerTopology,
+    defaultSettings: DEFAULT_SETTINGS,
+    deriveSessionScope,
     normalizeId,
 };
 export default HonchoRuntimePlugin;

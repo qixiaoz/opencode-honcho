@@ -5,6 +5,8 @@ import { __testing } from "../dist/index.js"
 
 test("root sessions keep user and root agent as peers", () => {
   const topology = __testing.buildPeerTopology({
+    config: { peerModel: "classic" },
+    peerModel: "classic",
     userPeerId: "user:alice",
     rootAgentPeerId: "opencode",
     activeAgentPeerId: "opencode",
@@ -20,8 +22,29 @@ test("root sessions keep user and root agent as peers", () => {
   assert.equal(topology.describedPeers.parentAgentObserverPeer, null)
 })
 
-test("child sessions scope parent observation to the child peer only", () => {
+test("classic peer model keeps delegated sessions on the Claude-style user and ai peers", () => {
   const topology = __testing.buildPeerTopology({
+    config: { peerModel: "classic" },
+    peerModel: "classic",
+    userPeerId: "user:alice",
+    rootAgentPeerId: "opencode",
+    activeAgentPeerId: "opencode:reviewer",
+    childAgentPeerId: "opencode:reviewer",
+    parentAgentObserverPeerId: "opencode:root-parent",
+  })
+
+  assert.deepEqual(topology.sessionPeerConfigs, {
+    "user:alice": { observeMe: true, observeOthers: false },
+    opencode: { observeMe: true, observeOthers: true },
+  })
+  assert.equal(topology.describedPeers.childAgentPeer, null)
+  assert.equal(topology.describedPeers.parentAgentObserverPeer, null)
+})
+
+test("hierarchical peer model scopes parent observation to the child peer only", () => {
+  const topology = __testing.buildPeerTopology({
+    config: { peerModel: "hierarchical" },
+    peerModel: "hierarchical",
     userPeerId: "user:alice",
     rootAgentPeerId: "opencode",
     activeAgentPeerId: "opencode:reviewer",
