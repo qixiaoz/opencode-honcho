@@ -2,6 +2,7 @@ import { type Plugin } from "@opencode-ai/plugin";
 type RecallMode = "hybrid" | "context" | "tools";
 type ObservationMode = "directional" | "unified";
 type SessionStrategy = "per-repo" | "per-directory" | "per-session" | "global";
+type PeerModel = "classic" | "hierarchical";
 type DialecticReasoningLevel = "minimal" | "low" | "medium" | "high" | "max";
 type WriteFrequency = "async" | "turn" | "session" | number;
 type ContextRefreshSettings = {
@@ -24,6 +25,7 @@ type HonchoSettings = {
     linkedHosts: string[];
     recallMode: RecallMode;
     observation: ObservationMode;
+    peerModel: PeerModel;
     writeFrequency: WriteFrequency;
     sessionStrategy: SessionStrategy;
     dialecticReasoningLevel: DialecticReasoningLevel;
@@ -69,7 +71,7 @@ type PeerTopology = {
 export declare const createHonchoRuntimePlugin: ({ configPath }?: RuntimePluginOptions) => Plugin;
 export declare const HonchoRuntimePlugin: Plugin;
 export declare const __testing: {
-    buildPeerTopology: (handle: Pick<RuntimeHandle, "userPeerId" | "rootAgentPeerId" | "activeAgentPeerId" | "childAgentPeerId" | "parentAgentObserverPeerId">) => PeerTopology;
+    buildPeerTopology: (handle: Pick<RuntimeHandle, "config" | "userPeerId" | "rootAgentPeerId" | "activeAgentPeerId" | "childAgentPeerId" | "parentAgentObserverPeerId">) => PeerTopology;
     normalizeId: (value: string) => string;
 };
 export default HonchoRuntimePlugin;

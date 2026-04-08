@@ -11,6 +11,7 @@ type HonchoClient = InstanceType<typeof HonchoSDK.Honcho>
 type RecallMode = "hybrid" | "context" | "tools"
 type ObservationMode = "directional" | "unified"
 type SessionStrategy = "per-repo" | "per-directory" | "per-session" | "global"
+type PeerModel = "classic" | "hierarchical"
 type DialecticReasoningLevel = "minimal" | "low" | "medium" | "high" | "max"
 type WriteFrequency = "async" | "turn" | "session" | number
 type ContextRefreshSettings = {
@@ -41,6 +42,7 @@ type HonchoSettings = {
   linkedHosts: string[]
   recallMode: RecallMode
   observation: ObservationMode
+  peerModel: PeerModel
   writeFrequency: WriteFrequency
   sessionStrategy: SessionStrategy
   dialecticReasoningLevel: DialecticReasoningLevel
@@ -120,6 +122,7 @@ const DEFAULT_SETTINGS: HonchoSettings = {
   linkedHosts: [],
   recallMode: "hybrid",
   observation: "directional",
+  peerModel: "classic",
   writeFrequency: "async",
   sessionStrategy: "per-repo",
   dialecticReasoningLevel: "low",
@@ -150,6 +153,7 @@ const NUMBER_KEYS = new Set<keyof HonchoSettings>([
 const ENUM_KEYS: Record<string, ReadonlySet<string>> = {
   recallMode: new Set(["hybrid", "context", "tools"]),
   observation: new Set(["directional", "unified"]),
+  peerModel: new Set(["classic", "hierarchical"]),
   sessionStrategy: new Set(["per-repo", "per-directory", "per-session", "global"]),
   dialecticReasoningLevel: new Set(["minimal", "low", "medium", "high", "max"]),
 }
@@ -167,6 +171,7 @@ const TOP_LEVEL_SETTING_FIELDS = new Set<keyof HonchoSettings>([
   "linkedHosts",
   "recallMode",
   "observation",
+  "peerModel",
   "writeFrequency",
   "sessionStrategy",
   "dialecticReasoningLevel",
@@ -187,6 +192,7 @@ const SETTING_FIELD_PATHS = new Set([
   "globalOverride",
   "recallMode",
   "observation",
+  "peerModel",
   "writeFrequency",
   "sessionStrategy",
   "dialecticReasoningLevel",
@@ -634,10 +640,13 @@ const deriveRuntimeHandle = async (
   const agentLabel = deriveAgentLabel(input, pluginInput)
   const parentAgentLabel = deriveParentAgentLabel(input)
   const childAgentPeerId =
-    parentAgentLabel && parentAgentLabel !== agentLabel ? normalizeId(`opencode:${agentLabel}`) : null
-  const rootAgentPeerId = normalizeId(settings.aiPeer || (childAgentPeerId ? "opencode" : `opencode:${agentLabel}`))
+    settings.peerModel === "hierarchical" && parentAgentLabel && parentAgentLabel !== agentLabel
+      ? normalizeId(`opencode:${agentLabel}`)
+      : null
+  const rootAgentPeerId = normalizeId(settings.aiPeer || "opencode")
   const activeAgentPeerId = childAgentPeerId ?? rootAgentPeerId
-  const parentAgentObserverPeerId = parentAgentLabel ? normalizeId(`opencode:${parentAgentLabel}`) : null
+  const parentAgentObserverPeerId =
+    settings.peerModel === "hierarchical" && parentAgentLabel ? normalizeId(`opencode:${parentAgentLabel}`) : null
 
   let sessionScope = workspaceId
   if (settings.sessionStrategy === "per-directory") {
@@ -674,7 +683,7 @@ const deriveRuntimeHandle = async (
 
 const buildPeerTopology = (handle: Pick<
   RuntimeHandle,
-  "userPeerId" | "rootAgentPeerId" | "activeAgentPeerId" | "childAgentPeerId" | "parentAgentObserverPeerId"
+  "config" | "userPeerId" | "rootAgentPeerId" | "activeAgentPeerId" | "childAgentPeerId" | "parentAgentObserverPeerId"
 >): PeerTopology => {
   const userPeer: PeerDescription = {
     id: handle.userPeerId,
@@ -705,7 +714,7 @@ const buildPeerTopology = (handle: Pick<
           modelsOnly: childAgentPeer ? [childAgentPeer.id] : [],
         }
 
-  if (childAgentPeer && parentAgentObserverPeer) {
+  if (handle.config.peerModel === "hierarchical" && childAgentPeer && parentAgentObserverPeer) {
     return {
       sessionPeerConfigs: {
         [childAgentPeer.id]: { observeMe: true, observeOthers: false },
@@ -920,6 +929,7 @@ export const createHonchoRuntimePlugin =
         linkedHosts: handle.config.linkedHosts,
         saveMessages: handle.config.saveMessages,
         contextRefresh: handle.config.contextRefresh,
+        peerModel: handle.config.peerModel,
         configured: hasConfiguredAuth(handle.config),
         localMode: isLocalBaseUrl(handle.config.baseUrl),
         baseUrl: handle.config.baseUrl,
@@ -1176,6 +1186,7 @@ export const createHonchoRuntimePlugin =
             `Workspace: ${handle.workspaceId}`,
             `Session key: ${handle.sessionKey}`,
             `Recall mode: ${handle.config.recallMode}`,
+            `Peer model: ${handle.config.peerModel}`,
             `Write frequency: ${handle.config.writeFrequency}`,
             `User peer: ${handle.userPeerId} (observeMe=true, observeOthers=false)`,
             `Root agent peer: ${handle.rootAgentPeerId} (observeMe=true, observeOthers=true)`,

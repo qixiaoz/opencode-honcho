@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS = {
     linkedHosts: [],
     recallMode: "hybrid",
     observation: "directional",
+    peerModel: "classic",
     writeFrequency: "async",
     sessionStrategy: "per-repo",
     dialecticReasoningLevel: "low",
@@ -48,6 +49,7 @@ const NUMBER_KEYS = new Set([
 const ENUM_KEYS = {
     recallMode: new Set(["hybrid", "context", "tools"]),
     observation: new Set(["directional", "unified"]),
+    peerModel: new Set(["classic", "hierarchical"]),
     sessionStrategy: new Set(["per-repo", "per-directory", "per-session", "global"]),
     dialecticReasoningLevel: new Set(["minimal", "low", "medium", "high", "max"]),
 };
@@ -63,6 +65,7 @@ const TOP_LEVEL_SETTING_FIELDS = new Set([
     "linkedHosts",
     "recallMode",
     "observation",
+    "peerModel",
     "writeFrequency",
     "sessionStrategy",
     "dialecticReasoningLevel",
@@ -82,6 +85,7 @@ const SETTING_FIELD_PATHS = new Set([
     "globalOverride",
     "recallMode",
     "observation",
+    "peerModel",
     "writeFrequency",
     "sessionStrategy",
     "dialecticReasoningLevel",
@@ -460,10 +464,12 @@ const deriveRuntimeHandle = async (pluginInput, input, configPathOverride) => {
     const userPeerId = normalizeId(`user:${settings.peerName || currentUserName()}`);
     const agentLabel = deriveAgentLabel(input, pluginInput);
     const parentAgentLabel = deriveParentAgentLabel(input);
-    const childAgentPeerId = parentAgentLabel && parentAgentLabel !== agentLabel ? normalizeId(`opencode:${agentLabel}`) : null;
-    const rootAgentPeerId = normalizeId(settings.aiPeer || (childAgentPeerId ? "opencode" : `opencode:${agentLabel}`));
+    const childAgentPeerId = settings.peerModel === "hierarchical" && parentAgentLabel && parentAgentLabel !== agentLabel
+        ? normalizeId(`opencode:${agentLabel}`)
+        : null;
+    const rootAgentPeerId = normalizeId(settings.aiPeer || "opencode");
     const activeAgentPeerId = childAgentPeerId ?? rootAgentPeerId;
-    const parentAgentObserverPeerId = parentAgentLabel ? normalizeId(`opencode:${parentAgentLabel}`) : null;
+    const parentAgentObserverPeerId = settings.peerModel === "hierarchical" && parentAgentLabel ? normalizeId(`opencode:${parentAgentLabel}`) : null;
     let sessionScope = workspaceId;
     if (settings.sessionStrategy === "per-directory") {
         const cwd = pluginInput.directory || pluginInput.worktree || rootDir;
@@ -524,7 +530,7 @@ const buildPeerTopology = (handle) => {
             observeOthers: true,
             modelsOnly: childAgentPeer ? [childAgentPeer.id] : [],
         };
-    if (childAgentPeer && parentAgentObserverPeer) {
+    if (handle.config.peerModel === "hierarchical" && childAgentPeer && parentAgentObserverPeer) {
         return {
             sessionPeerConfigs: {
                 [childAgentPeer.id]: { observeMe: true, observeOthers: false },
@@ -679,6 +685,7 @@ export const createHonchoRuntimePlugin = ({ configPath } = {}) => async (pluginI
             linkedHosts: handle.config.linkedHosts,
             saveMessages: handle.config.saveMessages,
             contextRefresh: handle.config.contextRefresh,
+            peerModel: handle.config.peerModel,
             configured: hasConfiguredAuth(handle.config),
             localMode: isLocalBaseUrl(handle.config.baseUrl),
             baseUrl: handle.config.baseUrl,
@@ -896,6 +903,7 @@ export const createHonchoRuntimePlugin = ({ configPath } = {}) => async (pluginI
                 `Workspace: ${handle.workspaceId}`,
                 `Session key: ${handle.sessionKey}`,
                 `Recall mode: ${handle.config.recallMode}`,
+                `Peer model: ${handle.config.peerModel}`,
                 `Write frequency: ${handle.config.writeFrequency}`,
                 `User peer: ${handle.userPeerId} (observeMe=true, observeOthers=false)`,
                 `Root agent peer: ${handle.rootAgentPeerId} (observeMe=true, observeOthers=true)`,

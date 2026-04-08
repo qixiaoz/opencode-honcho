@@ -6,7 +6,7 @@ This package is the publishable runtime that powers the generated local OpenCode
 
 - prompt-level memory injection
 - automatic durable memory writes
-- multi-agent peer and session mapping
+- Claude-style peer mapping by default with optional hierarchical multi-agent peer mapping
 - project-local overrides plus global OpenCode Honcho config
 - native OpenCode tools and slash-command control
 
@@ -66,6 +66,7 @@ The default global host mapping is Claude-style under `hosts.opencode`:
   "apiKey": "hch-...",
   "peerName": "alice",
   "globalOverride": false,
+  "peerModel": "classic",
   "hosts": {
     "opencode": {
       "workspace": "opencode",
@@ -121,17 +122,17 @@ This makes OpenCode align more closely with Claude Code's host-aware workspace m
 
 - `peerName` maps to the human user peer
 - `aiPeer` maps to the root OpenCode agent peer
-- Child OpenCode agents map to child Honcho agent peers
-- Parent OpenCode agents can be attached as observer peers in child-agent contexts
+- `peerModel=classic` keeps a Claude Code-style durable model where delegated sessions stay on the stable `userPeer + aiPeer`
+- `peerModel=hierarchical` enables explicit child and parent-observer peers for delegated child-agent sessions
 
-Child-agent contexts are intentionally session-scoped: the delegated child peer is the active worker, and the parent observer is scoped to that child session rather than modeling the root AI peer or the user peer directly.
+The default `peerModel` is `classic`. Switch to the OpenCode-native hierarchical model by setting `peerModel=hierarchical` in config or with `/honcho:set peerModel hierarchical`.
 
 Default peer observation semantics are:
 
 - user peer: `observeMe=true`, `observeOthers=false`
 - root agent peer: `observeMe=true`, `observeOthers=true`
-- child agent peer: `observeMe=true`, `observeOthers=false`, `sessionScoped=true`
-- parent observer peer: `observeMe=false`, `observeOthers=true`, `modelsOnly=[childPeer]`
+- child agent peer in `hierarchical` mode: `observeMe=true`, `observeOthers=false`, `sessionScoped=true`
+- parent observer peer in `hierarchical` mode: `observeMe=false`, `observeOthers=true`, `modelsOnly=[childPeer]`
 
 ### Session Mapping
 
