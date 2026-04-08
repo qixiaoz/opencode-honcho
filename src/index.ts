@@ -61,6 +61,7 @@ type RuntimeHandle = {
   sessionKey: string
   userPeerId: string
   rootAgentPeerId: string
+  activeAgentPeerId: string
   childAgentPeerId: string | null
   parentAgentObserverPeerId: string | null
 }
@@ -81,6 +82,24 @@ type SessionState = {
   promptCount: number
   lastPromptRefreshAt: number | null
   lastTopicKey: string | null
+}
+
+type PeerDescription = {
+  id: string
+  observeMe: boolean
+  observeOthers: boolean
+  sessionScoped?: boolean
+  modelsOnly?: string[]
+}
+
+type PeerTopology = {
+  sessionPeerConfigs: Record<string, { observeMe: boolean; observeOthers: boolean }>
+  describedPeers: {
+    userPeer: PeerDescription
+    rootAgentPeer: PeerDescription
+    childAgentPeer: PeerDescription | null
+    parentAgentObserverPeer: PeerDescription | null
+  }
 }
 
 const SETTINGS_FILE_NAME = "honcho.json"
@@ -605,8 +624,10 @@ const deriveRuntimeHandle = async (
   const userPeerId = normalizeId(`user:${settings.peerName || currentUserName()}`)
   const agentLabel = deriveAgentLabel(input, pluginInput)
   const parentAgentLabel = deriveParentAgentLabel(input)
-  const rootAgentPeerId = normalizeId(settings.aiPeer || `opencode:${agentLabel}`)
-  const childAgentPeerId = parentAgentLabel && parentAgentLabel !== agentLabel ? rootAgentPeerId : null
+  const childAgentPeerId =
+    parentAgentLabel && parentAgentLabel !== agentLabel ? normalizeId(`opencode:${agentLabel}`) : null
+  const rootAgentPeerId = normalizeId(settings.aiPeer || (childAgentPeerId ? "opencode" : `opencode:${agentLabel}`))
+  const activeAgentPeerId = childAgentPeerId ?? rootAgentPeerId
   const parentAgentObserverPeerId = parentAgentLabel ? normalizeId(`opencode:${parentAgentLabel}`) : null
 
   let sessionScope = workspaceId
@@ -621,7 +642,7 @@ const deriveRuntimeHandle = async (
     sessionScope = `${workspaceId}:${normalizeId(repoName)}`
   }
 
-  const lineage = [rootAgentPeerId]
+  const lineage = [activeAgentPeerId]
   if (parentAgentObserverPeerId && parentAgentObserverPeerId !== rootAgentPeerId) {
     lineage.unshift(parentAgentObserverPeerId)
   }
@@ -636,8 +657,71 @@ const deriveRuntimeHandle = async (
     sessionKey: normalizeId(`${settings.sessionStrategy}:${sessionScope}:${lineage.join(":")}`),
     userPeerId,
     rootAgentPeerId,
+    activeAgentPeerId,
     childAgentPeerId,
     parentAgentObserverPeerId,
+  }
+}
+
+const buildPeerTopology = (handle: Pick<
+  RuntimeHandle,
+  "userPeerId" | "rootAgentPeerId" | "activeAgentPeerId" | "childAgentPeerId" | "parentAgentObserverPeerId"
+>): PeerTopology => {
+  const userPeer: PeerDescription = {
+    id: handle.userPeerId,
+    observeMe: true,
+    observeOthers: false,
+  }
+  const rootAgentPeer: PeerDescription = {
+    id: handle.rootAgentPeerId,
+    observeMe: true,
+    observeOthers: true,
+  }
+  const childAgentPeer =
+    handle.childAgentPeerId === null
+      ? null
+      : {
+          id: handle.childAgentPeerId,
+          observeMe: true,
+          observeOthers: false,
+          sessionScoped: true,
+        }
+  const parentAgentObserverPeer =
+    handle.parentAgentObserverPeerId === null
+      ? null
+      : {
+          id: handle.parentAgentObserverPeerId,
+          observeMe: false,
+          observeOthers: true,
+          modelsOnly: childAgentPeer ? [childAgentPeer.id] : [],
+        }
+
+  if (childAgentPeer && parentAgentObserverPeer) {
+    return {
+      sessionPeerConfigs: {
+        [childAgentPeer.id]: { observeMe: true, observeOthers: false },
+        [parentAgentObserverPeer.id]: { observeMe: false, observeOthers: true },
+      },
+      describedPeers: {
+        userPeer,
+        rootAgentPeer,
+        childAgentPeer,
+        parentAgentObserverPeer,
+      },
+    }
+  }
+
+  return {
+    sessionPeerConfigs: {
+      [userPeer.id]: { observeMe: true, observeOthers: false },
+      [rootAgentPeer.id]: { observeMe: true, observeOthers: true },
+    },
+    describedPeers: {
+      userPeer,
+      rootAgentPeer,
+      childAgentPeer: null,
+      parentAgentObserverPeer: null,
+    },
   }
 }
 
@@ -655,22 +739,11 @@ const createActiveRuntime = async (
   const userPeer = await honcho.peer(handle.userPeerId, {
     configuration: { observeMe: true },
   })
-  const agentPeer = await honcho.peer(handle.rootAgentPeerId, {
+  const agentPeer = await honcho.peer(handle.activeAgentPeerId, {
     configuration: { observeMe: true },
   })
   const session = await honcho.session(handle.sessionKey)
-  await session.addPeers({
-    [handle.userPeerId]: { observeMe: true, observeOthers: false },
-    [handle.rootAgentPeerId]: { observeMe: true, observeOthers: true },
-    ...(handle.parentAgentObserverPeerId
-      ? {
-          [handle.parentAgentObserverPeerId]: {
-            observeMe: false,
-            observeOthers: true,
-          },
-        }
-      : {}),
-  } as never)
+  await session.addPeers(buildPeerTopology(handle).sessionPeerConfigs as never)
   return { ...handle, honcho, session, userPeer, agentPeer }
 }
 
@@ -699,34 +772,7 @@ const extractPromptQuery = (input: Record<string, unknown> | undefined) => {
   return extractText(input.parts)
 }
 
-const describePeers = (handle: RuntimeHandle) => ({
-  userPeer: {
-    id: handle.userPeerId,
-    observeMe: true,
-    observeOthers: false,
-  },
-  rootAgentPeer: {
-    id: handle.rootAgentPeerId,
-    observeMe: true,
-    observeOthers: true,
-  },
-  childAgentPeer:
-    handle.childAgentPeerId === null
-      ? null
-      : {
-          id: handle.childAgentPeerId,
-          observeMe: true,
-          observeOthers: true,
-        },
-  parentAgentObserverPeer:
-    handle.parentAgentObserverPeerId === null
-      ? null
-      : {
-          id: handle.parentAgentObserverPeerId,
-          observeMe: false,
-          observeOthers: true,
-        },
-})
+const describePeers = (handle: RuntimeHandle) => buildPeerTopology(handle).describedPeers
 
 const createSessionState = (): SessionState => ({
   stableContext: null,
@@ -1124,8 +1170,11 @@ export const createHonchoRuntimePlugin =
             `Write frequency: ${handle.config.writeFrequency}`,
             `User peer: ${handle.userPeerId} (observeMe=true, observeOthers=false)`,
             `Root agent peer: ${handle.rootAgentPeerId} (observeMe=true, observeOthers=true)`,
+            handle.childAgentPeerId
+              ? `Child agent peer: ${handle.childAgentPeerId} (observeMe=true, observeOthers=false, sessionScoped=true)`
+              : "Child agent peer: none",
             handle.parentAgentObserverPeerId
-              ? `Parent observer peer: ${handle.parentAgentObserverPeerId} (observeMe=false, observeOthers=true)`
+              ? `Parent observer peer: ${handle.parentAgentObserverPeerId} (observeMe=false, observeOthers=true, modelsOnly=${handle.childAgentPeerId || "none"})`
               : "Parent observer peer: none",
             state.lastInjectedContext ? `Last injected memory:\n${state.lastInjectedContext}` : "Last injected memory: none",
             state.recentConclusions.length > 0
@@ -1358,4 +1407,7 @@ export const createHonchoRuntimePlugin =
   }
 
 export const HonchoRuntimePlugin = createHonchoRuntimePlugin()
+export const __testing = {
+  buildPeerTopology,
+}
 export default HonchoRuntimePlugin

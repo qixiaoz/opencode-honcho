@@ -124,12 +124,14 @@ This makes OpenCode align more closely with Claude Code's host-aware workspace m
 - Child OpenCode agents map to child Honcho agent peers
 - Parent OpenCode agents can be attached as observer peers in child-agent contexts
 
+Child-agent contexts are intentionally session-scoped: the delegated child peer is the active worker, and the parent observer is scoped to that child session rather than modeling the root AI peer or the user peer directly.
+
 Default peer observation semantics are:
 
 - user peer: `observeMe=true`, `observeOthers=false`
 - root agent peer: `observeMe=true`, `observeOthers=true`
-- child agent peer: `observeMe=true`, `observeOthers=true`
-- parent observer peer: `observeMe=false`, `observeOthers=true`
+- child agent peer: `observeMe=true`, `observeOthers=false`, `sessionScoped=true`
+- parent observer peer: `observeMe=false`, `observeOthers=true`, `modelsOnly=[childPeer]`
 
 ### Session Mapping
 
