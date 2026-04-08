@@ -76,6 +76,8 @@ The default global host mapping is Claude-style under `hosts.opencode`:
 }
 ```
 
+For a local Honcho instance, set `baseUrl` to `http://127.0.0.1:8000` or `http://localhost:8000`. Localhost mode is allowed without an API key; cloud mode still expects one.
+
 ## OpenCode Behavior
 
 The runtime intentionally reflects current OpenCode host capabilities:
