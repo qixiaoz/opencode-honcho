@@ -1,14 +1,124 @@
-# @plasticlabs/opencode-honcho
+# @honcho-ai/opencode-honcho
 
 TypeScript-native Honcho plugin runtime for OpenCode.
 
-This package is the publishable runtime that powers the generated local OpenCode plugin bundle. It uses the Honcho TypeScript SDK directly and integrates with OpenCode's native plugin hooks for:
+This README assumes the public npm package name will be `@honcho-ai/opencode-honcho`.
+
+The runtime uses the Honcho TypeScript SDK directly and integrates with OpenCode's native plugin hooks for:
 
 - prompt-level memory injection
 - automatic durable memory writes
 - Claude-style peer mapping by default with optional hierarchical multi-agent peer mapping
-- project-local overrides plus global OpenCode Honcho config
-- native OpenCode tools and slash-command control
+- global OpenCode Honcho config with optional project overrides
+- native OpenCode tools and emitted slash-command control
+
+## Quick Start
+
+The simplest setup is:
+
+1. Install the runtime into your OpenCode project-local plugin environment.
+2. Add the thin plugin shim that re-exports the package.
+3. Add global Honcho config for either cloud or localhost.
+4. Start OpenCode in that project.
+
+### Install The Runtime
+
+Create `.opencode/package.json`:
+
+```json
+{
+  "name": "opencode-local-plugins",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@honcho-ai/opencode-honcho": "latest"
+  }
+}
+```
+
+Install it:
+
+```bash
+cd .opencode
+npm install
+```
+
+### Add The Plugin Shim
+
+Create `.opencode/plugins/honcho-runtime.js`:
+
+```js
+export { default } from "@honcho-ai/opencode-honcho"
+```
+
+### Cloud Setup
+
+Create `~/.config/opencode/honcho.json`:
+
+```json
+{
+  "apiKey": "hch-...",
+  "baseUrl": "https://api.honcho.dev",
+  "peerName": "alice",
+  "globalOverride": false,
+  "peerModel": "classic",
+  "sessionStrategy": "per-directory",
+  "hosts": {
+    "opencode": {
+      "workspace": "opencode",
+      "aiPeer": "opencode",
+      "linkedHosts": []
+    }
+  }
+}
+```
+
+### Local Setup
+
+For a local Honcho server, use `http://127.0.0.1:8000` or `http://localhost:8000`. Localhost mode is allowed without an API key.
+
+Create `~/.config/opencode/honcho.json`:
+
+```json
+{
+  "apiKey": "",
+  "baseUrl": "http://127.0.0.1:8000",
+  "peerName": "alice",
+  "globalOverride": false,
+  "peerModel": "classic",
+  "sessionStrategy": "per-directory",
+  "hosts": {
+    "opencode": {
+      "workspace": "opencode",
+      "aiPeer": "opencode",
+      "linkedHosts": []
+    }
+  }
+}
+```
+
+### Optional Project Override
+
+If you need per-project behavior, create `.opencode/honcho.json`:
+
+```json
+{
+  "workspace": "my-project",
+  "peerModel": "hierarchical"
+}
+```
+
+### Start OpenCode
+
+Run OpenCode from the project root after the plugin files exist under `.opencode/`.
+
+If you are using the full emitted bundle, you should also have the Honcho slash commands:
+
+- `/honcho:setup`
+- `/honcho:status`
+- `/honcho:settings`
+- `/honcho:set`
+- `/honcho:unset`
 
 ## Repository Layout
 
@@ -16,9 +126,7 @@ This package is the publishable runtime that powers the generated local OpenCode
 - `dist/*.js` is the checked-in runtime artifact used by emitted OpenCode bundles
 - `vendor/honcho-sdk` and `vendor/zod` are vendored runtime dependencies used to avoid plugin startup resolution issues inside OpenCode
 
-## Setup
-
-### Development
+## Development
 
 ```bash
 npm install
@@ -26,13 +134,47 @@ npm run check
 npm run build
 ```
 
-### Package Validation
+## Package Validation
 
 ```bash
 npm pack
 ```
 
-### OpenCode Runtime Usage
+## Defaults
+
+Current defaults:
+
+- `enabled: true`
+- `apiKey: ""`
+- `baseUrl: "https://api.honcho.dev"`
+- `peerName: ""` and falls back to the local OS user
+- `aiPeer: ""` and falls back to `opencode`
+- `workspace: ""` and falls back to configured host workspace, then project id, then repo name
+- `globalOverride: false`
+- `linkedHosts: []`
+- `recallMode: "hybrid"`
+- `observation: "directional"`
+- `peerModel: "classic"`
+- `writeFrequency: "async"`
+- `sessionStrategy: "per-directory"`
+- `dialecticReasoningLevel: "low"`
+- `dialecticDynamic: true`
+- `dialecticMaxChars: 600`
+- `messageMaxChars: 25000`
+- `saveMessages: true`
+- `contextRefresh.messageThreshold: 30`
+- `contextRefresh.ttlSeconds: 300`
+- `contextRefresh.skipTrivialPrompts: true`
+- `contextRefresh.useSessionStartDialectic: true`
+
+Default peer behavior:
+
+- user peer: `observeMe=true`, `observeOthers=false`
+- root agent peer: `observeMe=true`, `observeOthers=true`
+- child agent peer in `hierarchical` mode: `observeMe=true`, `observeOthers=false`, `sessionScoped=true`
+- parent observer peer in `hierarchical` mode: `observeMe=false`, `observeOthers=true`, `modelsOnly=[childPeer]`
+
+## OpenCode Runtime Usage
 
 This package is meant to be consumed by an emitted local OpenCode bundle, not installed as a standalone top-level OpenCode command.
 
@@ -187,7 +329,7 @@ The runtime follows a Claude-style layering model:
 
 ## Publishing
 
-This repo is the npm package surface that should be published as `@plasticlabs/opencode-honcho`.
+This repo is the npm package surface that should be published as `@honcho-ai/opencode-honcho`.
 
 It should include:
 
