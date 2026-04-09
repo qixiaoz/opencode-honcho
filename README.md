@@ -1,64 +1,168 @@
 # @honcho-ai/opencode-honcho
 
-Honcho Memory for OpenCode.
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.honcho.dev/llms.txt
+> Use this file to discover all available pages before exploring further.
 
-This plugin adds persistent [Honcho](https://github.com/plastic-labs/honcho) memory to OpenCode. It is designed for the current public OpenCode plugin surface and focuses on native runtime integration, Claude-style defaults, operator controls, and optional multi-agent memory modeling.
+# OpenCode
 
-## Install the Plugin
+> Add AI-native memory to OpenCode
 
-Install the plugin with one command:
+Give OpenCode long-term memory that survives context wipes, session restarts, and fresh chats. Honcho remembers what you're working on, durable preferences, and prior context across your projects.
+
+## Quick Start
+
+### Step 1: Get Your Honcho API Key
+
+1. Go to **[app.honcho.dev](https://app.honcho.dev)**
+2. Sign up or log in
+3. Copy your API key
+
+### Step 2: Install the Plugin
+
+This package installs the Honcho plugin into OpenCode and writes the Honcho command templates into your global OpenCode config.
 
 ```bash
 npx @honcho-ai/opencode-honcho install
 ```
 
-This installer:
+This installer expects the `opencode` CLI to already be installed and available on your `PATH`.
+
+### Step 3: Run Setup in OpenCode
+
+1. Start OpenCode
+2. Run `/honcho:setup`
+3. Keep the default `Honcho Cloud` option unless you explicitly want a self-hosted or local endpoint
+4. Enter your Honcho API key
+5. Run `/honcho:status` to verify the runtime
+
+### Step 4: (Optional) Kickstart with an Interview
+
+```text
+/honcho:interview
+```
+
+This captures durable preferences or stable project context into Honcho memory.
+
+## What You Get
+
+- **Persistent Memory** - OpenCode can retain durable context across sessions
+- **Cloud or Local Deployments** - Use Honcho Cloud or point at a self-hosted or local Honcho instance
+- **Workspace Mapping** - OpenCode projects map to Honcho workspaces
+- **Session Mapping** - Sessions can be scoped per directory, repo, branch, chat instance, or globally
+- **Durable Writes** - Honcho can retain stable conclusions and session context
+- **Memory Retrieval** - Search memory, query Honcho knowledge, and inject relevant context into prompts
+- **Peer Modeling** - Supports the default classic peer model and optional hierarchical modeling for delegated agent flows
+
+## Installation Output
+
+The installer:
 
 - registers `@honcho-ai/opencode-honcho` with OpenCode
 - enables both native server and TUI plugin targets
-- writes the Honcho command templates into global OpenCode config
+- writes Honcho command templates into global OpenCode config
 - activates the plugin globally for all OpenCode projects
 
-## Quick Setup
+## Configuration
 
-### Minimal Path
+OpenCode Honcho configuration lives in:
 
-1. Install the plugin with `npx @honcho-ai/opencode-honcho install`.
-2. Start OpenCode.
-3. Run `/honcho:setup` from slash autocomplete or the command palette.
-4. Keep the default `Honcho Cloud` deployment unless you explicitly want a self-hosted or local Honcho instance.
-5. Enter your Honcho API key.
-6. Run `/honcho:status` to verify the runtime.
+- global config: `~/.config/opencode/honcho.json`
+- optional project override: `.opencode/honcho.json`
 
-### Self-hosted or Local Honcho
+The global config is the normal place to start. Project config is only needed when a specific repo should behave differently.
 
-1. Install the plugin with `npx @honcho-ai/opencode-honcho install`.
-2. Start OpenCode.
-3. Run `/honcho:setup`.
-4. Choose `Self-hosted / local`.
-5. Set `baseUrl` to your Honcho endpoint such as `http://127.0.0.1:8000`.
-6. Enter an API key only if your deployment requires one.
-7. Run `/honcho:status` to verify the runtime.
+```jsonc
+{
+  "enabled": true,
+  "apiKey": "hch-...",
+  "baseUrl": "https://api.honcho.dev",
+  "peerName": "",
+  "aiPeer": "",
+  "workspace": "",
+  "globalOverride": false,
+  "linkedHosts": [],
+  "recallMode": "hybrid",
+  "observation": "directional",
+  "peerModel": "classic",
+  "writeFrequency": "async",
+  "sessionStrategy": "per-directory",
+  "dialecticReasoningLevel": "low",
+  "dialecticDynamic": true,
+  "dialecticMaxChars": 600,
+  "messageMaxChars": 25000,
+  "saveMessages": true,
+  "contextRefresh": {
+    "messageThreshold": 30,
+    "ttlSeconds": 300,
+    "skipTrivialPrompts": true,
+    "useSessionStartDialectic": true
+  },
+  "hosts": {
+    "opencode": {
+      "workspace": "opencode",
+      "aiPeer": "opencode",
+      "linkedHosts": []
+    }
+  }
+}
+```
 
-If you use a self-hosted or local Honcho deployment, `baseUrl` must be reachable from the OpenCode host runtime. If OpenCode is running in Docker or a remote environment, `localhost` may not point at your machine.
+### Cloud vs Local
 
-## Features
+For Honcho Cloud:
 
-- Adds persistent Honcho memory to OpenCode through the native plugin runtime.
-- Maps OpenCode workspaces to Honcho workspaces.
-- Maps OpenCode sessions to Honcho sessions with multiple session strategy options.
-- Maps the user and OpenCode assistant to Honcho peers.
-- Supports Claude-style `classic` peer modeling by default.
-- Supports optional `hierarchical` peer modeling for delegated child-agent sessions.
-- Injects cached Honcho context into OpenCode prompts.
-- Supports automatic durable memory writes.
-- Registers Honcho retrieval and durable-write tools for OpenCode.
-- Supports both Honcho Cloud and self-hosted or local Honcho deployments.
-- Supports explicit peer observation controls with `observeMe` and `observeOthers`.
+- `apiKey` is required
+- `baseUrl` should remain `https://api.honcho.dev`
 
-## Capabilities
+For self-hosted or local Honcho:
 
-The plugin uses the following OpenCode plugin surfaces:
+- `baseUrl` should point to your deployment, for example `http://127.0.0.1:8000`
+- `apiKey` is required only if that deployment requires authentication
+
+If OpenCode is running in Docker or another remote environment, `localhost` may not refer to your machine. The configured `baseUrl` must be reachable from the OpenCode host runtime.
+
+### Session Strategies
+
+| Strategy | Behavior | Best for |
+| --- | --- | --- |
+| `per-directory` | One session per working directory | Default project memory |
+| `per-repo` | One session per repository | Repos with multiple entry directories |
+| `git-branch` | Session changes with the current branch | Branch-specific workflows |
+| `per-session` | New session for each OpenCode session id | Short-lived isolated work |
+| `chat-instance` | Session follows the current chat instance | Highly ephemeral usage |
+| `global` | One session for everything | Shared memory across all work |
+
+## Operator Commands
+
+| Command | Description |
+| --- | --- |
+| `/honcho:setup` | First-time setup for cloud or local Honcho |
+| `/honcho:status` | Show effective Honcho status for the current OpenCode project |
+| `/honcho:settings` | Show effective config values and config paths |
+| `/honcho:set` | Persist a config field in `.opencode/honcho.json` |
+| `/honcho:unset` | Reset a project config field back to its default |
+| `/honcho:mode` | Change `recallMode` |
+| `/honcho:write` | Change `writeFrequency` only. This does not create memory |
+| `/honcho:interview` | Capture durable memory or preferences into Honcho |
+
+## Agent Tools
+
+The plugin exposes these tools inside OpenCode:
+
+| Tool | Description |
+| --- | --- |
+| `honcho_setup` | Validate setup and persist shared credentials or endpoint settings |
+| `honcho_status` | Show effective runtime status |
+| `honcho_get_config` | Read effective and persisted settings |
+| `honcho_set_config` | Update a persisted project setting |
+| `honcho_search` | Search Honcho session memory |
+| `honcho_chat` | Query Honcho for reasoning-backed context |
+| `honcho_create_conclusion` | Save a durable memory conclusion |
+
+## Plugin Surfaces
+
+The plugin uses these OpenCode plugin capabilities:
 
 - `event`
 - `chat.message`
@@ -68,73 +172,6 @@ The plugin uses the following OpenCode plugin surfaces:
 - `experimental.session.compacting`
 - `shell.env`
 - `tool`
-
-## Agent Tools
-
-The plugin registers these Honcho tools for OpenCode:
-
-- `honcho_setup`
-- `honcho_status`
-- `honcho_get_config`
-- `honcho_set_config`
-- `honcho_search`
-- `honcho_chat`
-- `honcho_create_conclusion`
-
-## Operator Actions
-
-The plugin exposes the main operator workflow directly:
-
-- `/honcho:setup`
-- `/honcho:status`
-- `/honcho:settings`
-- `/honcho:set`
-- `/honcho:unset`
-- `/honcho:mode`
-- `/honcho:write` to change `writeFrequency`. This updates policy only and does not create memory.
-- `/honcho:interview` to create durable memory or capture durable preferences.
-
-## Configuration
-
-### Required Settings
-
-For Honcho Cloud:
-
-- `apiKey`
-
-For self-hosted or local Honcho:
-
-- `baseUrl`
-- `apiKey`
-
-Localhost mode is allowed without an API key. For local Honcho, `apiKey` may be empty when `baseUrl` points at `http://127.0.0.1:8000` or `http://localhost:8000`.
-
-### Defaults
-
-| Setting | Default | Use when |
-| --- | --- | --- |
-| `enabled` | `true` | Turn this off to disable Honcho runtime behavior without uninstalling the plugin. |
-| `apiKey` | `""` | Set this for Honcho Cloud or authenticated self-hosted deployments. |
-| `baseUrl` | `https://api.honcho.dev` | Override this for self-hosted or local Honcho deployments. |
-| `peerName` | `""` | Override this if you do not want the plugin to fall back to the local OS user. |
-| `aiPeer` | `""` | Override this if you do not want the plugin to fall back to `opencode`. |
-| `workspace` | `""` | Override this if you do not want the plugin to fall back to configured host workspace, then project id, then repo name. |
-| `globalOverride` | `false` | Enable this if you want the top-level workspace to win over `hosts.opencode.workspace`. |
-| `linkedHosts` | `[]` | Add linked host names when you want host-aware cross-memory configuration. |
-| `recallMode` | `hybrid` | Change this to `context` or `tools` if you want different prompt-injection versus tool-use behavior. |
-| `observation` | `directional` | Change this if you want a different peer observation mode. |
-| `peerModel` | `classic` | Change this to `hierarchical` if you want explicit child and parent-observer peer modeling. |
-| `writeFrequency` | `async` | Change this if you want a different durable-write cadence. |
-| `sessionStrategy` | `per-directory` | Change this to `per-repo`, `per-session`, `chat-instance`, `git-branch`, or `global` for different session scoping. |
-| `dialecticReasoningLevel` | `low` | Increase this if you want deeper Honcho reasoning behavior. |
-| `dialecticDynamic` | `true` | Turn this off for more fixed dialectic behavior. |
-| `dialecticMaxChars` | `600` | Increase this if you want larger dialectic summaries. |
-| `messageMaxChars` | `25000` | Change this if you need a different message ingestion limit. |
-| `saveMessages` | `true` | Turn this off if you do not want OpenCode messages saved into Honcho. |
-| `contextRefresh.messageThreshold` | `30` | Lower this if you want prompt-context refreshes to happen more frequently. |
-| `contextRefresh.ttlSeconds` | `300` | Lower this if you want prompt-context refreshes to expire sooner. |
-| `contextRefresh.skipTrivialPrompts` | `true` | Turn this off if you want even trivial prompts to refresh memory context. |
-| `contextRefresh.useSessionStartDialectic` | `true` | Turn this off if you want lighter session-start warmup behavior. |
 
 ## Development
 
