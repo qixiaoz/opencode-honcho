@@ -1,4 +1,5 @@
-import { mkdir, writeFile, access } from "node:fs/promises";
+import { mkdir, writeFile, access, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 const DEFAULT_PACKAGE_NAME = "@honcho-ai/opencode-honcho";
 const opencodeCommands = () => ({
@@ -41,6 +42,57 @@ const opencodeManifest = () => JSON.stringify({
 }, null, 2) + "\n";
 const pluginShim = (packageName) => `export { default } from "${packageName}"\n`;
 const projectOverrideJson = () => "{}\n";
+const globalConfigDir = () => path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "opencode");
+const readJsonFile = async (filePath) => {
+    try {
+        return JSON.parse(await readFile(filePath, "utf-8"));
+    }
+    catch (error) {
+        if (error.code === "ENOENT") {
+            return {};
+        }
+        throw error;
+    }
+};
+const normalizePluginList = (value) => Array.isArray(value)
+    ? value.filter((entry) => typeof entry === "string" ||
+        (Array.isArray(entry) &&
+            entry.length >= 1 &&
+            typeof entry[0] === "string" &&
+            (entry.length === 1 || typeof entry[1] === "object" || entry[1] === undefined)))
+    : [];
+const ensurePluginSpec = (plugins, pluginSpec) => {
+    const packageName = pluginSpec.replace(/@[^/]+$/, "");
+    if (plugins.some((entry) => {
+        const spec = typeof entry === "string" ? entry : entry[0];
+        return spec === pluginSpec || spec === packageName || spec.replace(/@[^/]+$/, "") === packageName;
+    })) {
+        return plugins;
+    }
+    return [...plugins, pluginSpec];
+};
+export const installGlobalConfig = async ({ configDir = globalConfigDir(), pluginSpec = DEFAULT_PACKAGE_NAME, } = {}) => {
+    const absoluteConfigDir = path.resolve(configDir);
+    const opencodeConfigPath = path.join(absoluteConfigDir, "opencode.json");
+    const current = await readJsonFile(opencodeConfigPath);
+    const next = {
+        ...current,
+        $schema: typeof current.$schema === "string" ? current.$schema : "https://opencode.ai/config.json",
+        plugin: ensurePluginSpec(normalizePluginList(current.plugin), pluginSpec),
+        command: {
+            ...(typeof current.command === "object" && current.command ? current.command : {}),
+            ...opencodeCommands(),
+        },
+    };
+    await mkdir(absoluteConfigDir, { recursive: true });
+    await writeFile(opencodeConfigPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+    return {
+        configDir: absoluteConfigDir,
+        opencodeConfigPath,
+        commandNames: Object.keys(opencodeCommands()),
+        pluginSpec,
+    };
+};
 const writeFileIfNeeded = async ({ filePath, content, force, }) => {
     if (!force) {
         try {
@@ -94,6 +146,8 @@ export const initializeProject = async ({ rootDir = process.cwd(), packageName =
 };
 export const scaffoldTemplates = {
     DEFAULT_PACKAGE_NAME,
+    globalConfigDir,
+    installGlobalConfig,
     opencodeCommands,
     opencodeManifest,
     pluginShim,

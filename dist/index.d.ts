@@ -90,9 +90,28 @@ export declare const __testing: {
         createdPaths: string[];
         skippedPaths: string[];
     }>;
+    installGlobalConfig: ({ configDir, pluginSpec, }?: {
+        configDir?: string;
+        pluginSpec?: string;
+    }) => Promise<{
+        configDir: string;
+        opencodeConfigPath: string;
+        commandNames: string[];
+        pluginSpec: string;
+    }>;
     normalizeId: (value: string) => string;
     scaffoldTemplates: {
         DEFAULT_PACKAGE_NAME: string;
+        globalConfigDir: () => string;
+        installGlobalConfig: ({ configDir, pluginSpec, }?: {
+            configDir?: string;
+            pluginSpec?: string;
+        }) => Promise<{
+            configDir: string;
+            opencodeConfigPath: string;
+            commandNames: string[];
+            pluginSpec: string;
+        }>;
         opencodeCommands: () => {
             "honcho:setup": {
                 description: string;

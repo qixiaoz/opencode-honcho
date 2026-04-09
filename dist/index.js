@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import * as HonchoSDK from "../vendor/honcho-sdk/dist/index.js";
 import { tool } from "@opencode-ai/plugin";
-import { initializeProject, scaffoldTemplates } from "./scaffold.js";
+import { initializeProject, installGlobalConfig, scaffoldTemplates } from "./scaffold.js";
 const { Honcho } = HonchoSDK;
 const SETTINGS_FILE_NAME = "honcho.json";
 const SETTINGS_DIR_NAME = ".opencode";
@@ -1154,6 +1154,7 @@ export const __testing = {
     defaultSettings: DEFAULT_SETTINGS,
     deriveSessionScope,
     initializeProject,
+    installGlobalConfig,
     normalizeId,
     scaffoldTemplates,
 };

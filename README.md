@@ -6,13 +6,23 @@ This plugin adds persistent [Honcho](https://github.com/plastic-labs/honcho) mem
 
 ## Install the Plugin
 
-Install the plugin with OpenCode:
+Install the plugin with one command:
+
+```bash
+npx @honcho-ai/opencode-honcho install
+```
+
+This installer:
+
+- registers `@honcho-ai/opencode-honcho` with OpenCode
+- enables both native server and TUI plugin targets
+- writes the Honcho command templates into global OpenCode config
+
+If you want the lower-level native OpenCode command directly, this is the equivalent runtime install path:
 
 ```bash
 opencode plugin @honcho-ai/opencode-honcho --global
 ```
-
-This native install path gives OpenCode the Honcho runtime plus interactive Honcho commands in the TUI.
 
 If you also want project-local server command scaffolding for non-interactive or config-backed command flows, run:
 
@@ -30,14 +40,14 @@ The init command creates:
 
 ### Minimal Path
 
-1. Install the plugin with `opencode plugin @honcho-ai/opencode-honcho --global`.
+1. Install the plugin with `npx @honcho-ai/opencode-honcho install`.
 2. Start OpenCode.
 3. Run `/honcho:setup` from slash autocomplete or the command palette.
 4. If you are using Honcho Cloud, keep the default cloud deployment and enter your Honcho API key.
 5. If you are using a self-hosted or local Honcho instance, choose `Self-hosted / local` and set `baseUrl` to your Honcho endpoint such as `http://127.0.0.1:8000`.
 6. Run `/honcho:status` to verify the runtime.
 
-If you want local project scaffolding for config-backed command execution, run `npx @honcho-ai/opencode-honcho init` from the project root after installing the plugin.
+If you want local project scaffolding for project-specific command execution, run `npx @honcho-ai/opencode-honcho init` from the project root after installing the plugin.
 
 If you use a self-hosted or local Honcho deployment, `baseUrl` must be reachable from the OpenCode host runtime. If OpenCode is running in Docker or a remote environment, `localhost` may not point at your machine.
 
