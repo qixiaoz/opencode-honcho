@@ -40,7 +40,11 @@ const writeGlobalSettings = async (settings) => {
 };
 const normalizeSettings = (settings) => ({
     baseUrl: typeof settings.baseUrl === "string" && settings.baseUrl.trim() ? settings.baseUrl : DEFAULT_BASE_URL,
-    apiKey: typeof settings.apiKey === "string" ? settings.apiKey.trim() : "",
+    apiKey: typeof settings.honchoApiKey === "string" && settings.honchoApiKey.trim()
+        ? settings.honchoApiKey.trim()
+        : typeof settings.apiKey === "string"
+            ? settings.apiKey.trim()
+            : "",
 });
 const statusMessage = (settings) => {
     const normalized = normalizeSettings(settings);
@@ -62,9 +66,19 @@ const statusMessage = (settings) => {
 };
 const saveSettings = async (partial) => {
     const current = await readGlobalSettings();
+    const nextApiKey = typeof partial.honchoApiKey === "string"
+        ? partial.honchoApiKey
+        : typeof partial.apiKey === "string"
+            ? partial.apiKey
+            : typeof current.honchoApiKey === "string"
+                ? current.honchoApiKey
+                : typeof current.apiKey === "string"
+                    ? current.apiKey
+                    : undefined;
     const next = {
         ...current,
         ...partial,
+        honchoApiKey: nextApiKey,
         hosts: {
             ...current.hosts,
             opencode: {
@@ -75,6 +89,7 @@ const saveSettings = async (partial) => {
             },
         },
     };
+    delete next.apiKey;
     return writeGlobalSettings(next);
 };
 const openStatusDialog = async (api) => {
@@ -91,7 +106,7 @@ const openLocalApiKeyPrompt = (api, baseUrl) => {
         onConfirm: async (apiKey) => {
             const configPath = await saveSettings({
                 baseUrl,
-                apiKey: apiKey.trim(),
+                honchoApiKey: apiKey.trim(),
             });
             api.ui.dialog.replace(() => api.ui.DialogAlert({
                 title: "Honcho configured",
@@ -121,7 +136,7 @@ const openCloudApiKeyPrompt = (api) => {
         onConfirm: async (apiKey) => {
             const configPath = await saveSettings({
                 baseUrl: DEFAULT_BASE_URL,
-                apiKey: apiKey.trim(),
+                honchoApiKey: apiKey.trim(),
             });
             api.ui.dialog.replace(() => api.ui.DialogAlert({
                 title: "Honcho configured",

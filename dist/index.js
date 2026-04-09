@@ -27,6 +27,8 @@ const SETTINGS_FILE_NAME = "honcho.json";
 const SETTINGS_DIR_NAME = ".opencode";
 const GLOBAL_SETTINGS_DIR_NAME = "opencode";
 const GLOBAL_SETTINGS_FILE_PATH = "honcho.json";
+const PERSISTED_API_KEY_FIELD = "honchoApiKey";
+const LEGACY_API_KEY_FIELD = "apiKey";
 const RUNTIME_SERVICE = "opencode-honcho";
 const MAX_RECENT_CONCLUSIONS = 8;
 const DEFAULT_SETTINGS = {
@@ -95,6 +97,7 @@ const TOP_LEVEL_SETTING_FIELDS = new Set([
     "contextRefresh",
 ]);
 const SETTING_FIELD_PATHS = new Set([
+    PERSISTED_API_KEY_FIELD,
     "enabled",
     "apiKey",
     "baseUrl",
@@ -218,6 +221,20 @@ const parseSettingValue = (fieldPath, raw) => {
     }
     return raw;
 };
+const normalizedRawSettings = (raw) => {
+    const normalized = { ...raw };
+    const persistedApiKey = typeof raw[PERSISTED_API_KEY_FIELD] === "string"
+        ? expandEnv(raw[PERSISTED_API_KEY_FIELD])
+        : "";
+    const legacyApiKey = typeof raw[LEGACY_API_KEY_FIELD] === "string"
+        ? expandEnv(raw[LEGACY_API_KEY_FIELD])
+        : "";
+    const effectiveApiKey = persistedApiKey || legacyApiKey;
+    if (effectiveApiKey) {
+        normalized[LEGACY_API_KEY_FIELD] = effectiveApiKey;
+    }
+    return normalized;
+};
 const applyRawLayer = (target, raw) => {
     for (const [key, value] of Object.entries(raw)) {
         if (key === "contextRefresh") {
@@ -265,7 +282,7 @@ const hostScopedSettings = (value) => {
     };
 };
 const normalizeScopedSettings = (raw, hostId = "opencode") => {
-    const normalized = { ...raw };
+    const normalized = normalizedRawSettings(raw);
     const globalOverride = raw.globalOverride === true;
     const topLevelWorkspace = typeof raw.workspace === "string" ? raw.workspace : "";
     const hostBlock = isRecord(raw.hosts) ? hostScopedSettings(raw.hosts[hostId]) : null;
@@ -292,6 +309,18 @@ const mergeSettings = (...rawLayers) => {
         applyRawLayer(merged, raw);
     }
     return merged;
+};
+const persistedSettings = (settings) => {
+    const merged = mergeSettings(normalizedRawSettings(settings));
+    const persisted = { ...merged };
+    if (typeof merged.apiKey === "string" && merged.apiKey.trim()) {
+        persisted[PERSISTED_API_KEY_FIELD] = merged.apiKey;
+    }
+    else {
+        delete persisted[PERSISTED_API_KEY_FIELD];
+    }
+    delete persisted[LEGACY_API_KEY_FIELD];
+    return persisted;
 };
 const setSettingValue = (target, fieldPath, value) => {
     const parts = fieldPath.split(".");
@@ -372,10 +401,11 @@ const shouldRefreshPromptContext = (state, topicKey, settings) => {
     return Date.now() - state.lastPromptRefreshAt >= settings.ttlSeconds * 1000;
 };
 const parseSettingField = (field) => {
-    if (!SETTING_FIELD_PATHS.has(field)) {
+    const normalizedField = field === PERSISTED_API_KEY_FIELD ? LEGACY_API_KEY_FIELD : field;
+    if (!SETTING_FIELD_PATHS.has(field) && !SETTING_FIELD_PATHS.has(normalizedField)) {
         throw new Error(`Unknown setting '${field}'. Allowed fields: ${listAllowedSettingPaths().join(", ")}`);
     }
-    return field;
+    return normalizedField;
 };
 const lookupField = (payload, field) => field.split(".").reduce((current, part) => {
     if (!isRecord(current))
@@ -421,7 +451,7 @@ const globalSettingsPath = () => {
 };
 const readConfigFile = async (configPath) => {
     try {
-        return JSON.parse(await readFile(configPath, "utf-8"));
+        return normalizedRawSettings(JSON.parse(await readFile(configPath, "utf-8")));
     }
     catch (error) {
         if (isRecord(error) && error.code === "ENOENT") {
@@ -449,7 +479,7 @@ const resolveSettings = async (rootDir, configPathOverride) => {
 };
 const writeSettings = async (configPath, settings) => {
     await mkdir(path.dirname(configPath), { recursive: true });
-    await writeFile(configPath, `${JSON.stringify(mergeSettings(settings), null, 2)}\n`, "utf-8");
+    await writeFile(configPath, `${JSON.stringify(persistedSettings(settings), null, 2)}\n`, "utf-8");
 };
 const currentUserName = () => process.env.USER || process.env.LOGNAME || "user";
 const deriveAgentLabel = (input, pluginInput) => {
@@ -667,7 +697,27 @@ const extractPromptQuery = (input) => {
     }
     return extractText(input.parts);
 };
-const describePeers = (handle) => buildPeerTopology(handle).describedPeers;
+const toUserFacingPeerDescription = (peer) => {
+    if (!peer) {
+        return null;
+    }
+    return {
+        id: peer.id,
+        observe_me: peer.observeMe,
+        observe_others: peer.observeOthers,
+        ...(peer.sessionScoped ? { session_scoped: true } : {}),
+        ...(peer.modelsOnly ? { models_only: peer.modelsOnly } : {}),
+    };
+};
+const describePeers = (handle) => {
+    const peers = buildPeerTopology(handle).describedPeers;
+    return {
+        userPeer: toUserFacingPeerDescription(peers.userPeer),
+        rootAgentPeer: toUserFacingPeerDescription(peers.rootAgentPeer),
+        childAgentPeer: toUserFacingPeerDescription(peers.childAgentPeer),
+        parentAgentObserverPeer: toUserFacingPeerDescription(peers.parentAgentObserverPeer),
+    };
+};
 const createSessionState = () => ({
     stableContext: null,
     cachedPromptContext: null,
@@ -970,13 +1020,13 @@ export const createHonchoRuntimePlugin = ({ configPath } = {}) => async (pluginI
                 `Recall mode: ${handle.config.recallMode}`,
                 `Peer model: ${handle.config.peerModel}`,
                 `Write frequency: ${handle.config.writeFrequency}`,
-                `User peer: ${handle.userPeerId} (observeMe=true, observeOthers=false)`,
-                `Root agent peer: ${handle.rootAgentPeerId} (observeMe=true, observeOthers=true)`,
+                `User peer: ${handle.userPeerId} (observe_me=true, observe_others=false)`,
+                `Root agent peer: ${handle.rootAgentPeerId} (observe_me=true, observe_others=true)`,
                 handle.childAgentPeerId
-                    ? `Child agent peer: ${handle.childAgentPeerId} (observeMe=true, observeOthers=false, sessionScoped=true)`
+                    ? `Child agent peer: ${handle.childAgentPeerId} (observe_me=true, observe_others=false, session_scoped=true)`
                     : "Child agent peer: none",
                 handle.parentAgentObserverPeerId
-                    ? `Parent observer peer: ${handle.parentAgentObserverPeerId} (observeMe=false, observeOthers=true, modelsOnly=${handle.childAgentPeerId || "none"})`
+                    ? `Parent observer peer: ${handle.parentAgentObserverPeerId} (observe_me=false, observe_others=true, models_only=${handle.childAgentPeerId || "none"})`
                     : "Parent observer peer: none",
                 state.lastInjectedContext ? `Last injected memory:\n${state.lastInjectedContext}` : "Last injected memory: none",
                 state.recentConclusions.length > 0
@@ -1048,7 +1098,7 @@ export const createHonchoRuntimePlugin = ({ configPath } = {}) => async (pluginI
                             nextGlobal.globalOverride = nextGlobal.globalOverride === true;
                             if (effectiveApiKey) {
                                 setSettingValue(nextGlobal, "apiKey", effectiveApiKey);
-                                persistedFields.push("apiKey");
+                                persistedFields.push(PERSISTED_API_KEY_FIELD);
                             }
                             if (effectiveBaseUrl && (providedBaseUrl || providedApiKey)) {
                                 setSettingValue(nextGlobal, "baseUrl", effectiveBaseUrl);

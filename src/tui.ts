@@ -9,6 +9,7 @@ const GLOBAL_SETTINGS_DIR_NAME = "opencode"
 const SETTINGS_FILE_NAME = "honcho.json"
 
 type GlobalSettings = {
+  honchoApiKey?: string
   apiKey?: string
   baseUrl?: string
   hosts?: {
@@ -58,7 +59,12 @@ const writeGlobalSettings = async (settings: GlobalSettings) => {
 
 const normalizeSettings = (settings: GlobalSettings) => ({
   baseUrl: typeof settings.baseUrl === "string" && settings.baseUrl.trim() ? settings.baseUrl : DEFAULT_BASE_URL,
-  apiKey: typeof settings.apiKey === "string" ? settings.apiKey.trim() : "",
+  apiKey:
+    typeof settings.honchoApiKey === "string" && settings.honchoApiKey.trim()
+      ? settings.honchoApiKey.trim()
+      : typeof settings.apiKey === "string"
+        ? settings.apiKey.trim()
+        : "",
 })
 
 const statusMessage = (settings: GlobalSettings) => {
@@ -82,9 +88,20 @@ const statusMessage = (settings: GlobalSettings) => {
 
 const saveSettings = async (partial: Partial<GlobalSettings>) => {
   const current = await readGlobalSettings()
+  const nextApiKey =
+    typeof partial.honchoApiKey === "string"
+      ? partial.honchoApiKey
+      : typeof partial.apiKey === "string"
+        ? partial.apiKey
+        : typeof current.honchoApiKey === "string"
+          ? current.honchoApiKey
+          : typeof current.apiKey === "string"
+            ? current.apiKey
+            : undefined
   const next: GlobalSettings = {
     ...current,
     ...partial,
+    honchoApiKey: nextApiKey,
     hosts: {
       ...current.hosts,
       opencode: {
@@ -95,6 +112,7 @@ const saveSettings = async (partial: Partial<GlobalSettings>) => {
       },
     },
   }
+  delete next.apiKey
   return writeGlobalSettings(next)
 }
 
@@ -116,7 +134,7 @@ const openLocalApiKeyPrompt = (api: Parameters<TuiPlugin>[0], baseUrl: string) =
       onConfirm: async (apiKey) => {
         const configPath = await saveSettings({
           baseUrl,
-          apiKey: apiKey.trim(),
+          honchoApiKey: apiKey.trim(),
         })
         api.ui.dialog.replace(() =>
           api.ui.DialogAlert({
@@ -154,7 +172,7 @@ const openCloudApiKeyPrompt = (api: Parameters<TuiPlugin>[0]) => {
       onConfirm: async (apiKey) => {
         const configPath = await saveSettings({
           baseUrl: DEFAULT_BASE_URL,
-          apiKey: apiKey.trim(),
+          honchoApiKey: apiKey.trim(),
         })
         api.ui.dialog.replace(() =>
           api.ui.DialogAlert({
