@@ -67,6 +67,9 @@ const normalizeSettings = (settings: GlobalSettings) => ({
         : "",
 })
 
+const validateCloudApiKey = (value: string) =>
+  value.trim() ? null : "Honcho Cloud requires a Honcho API key. Enter a non-empty key or choose Self-hosted / local."
+
 const statusMessage = (settings: GlobalSettings) => {
   const normalized = normalizeSettings(settings)
   const configured = Boolean(normalized.apiKey) || isLocalBaseUrl(normalized.baseUrl)
@@ -170,6 +173,16 @@ const openCloudApiKeyPrompt = (api: Parameters<TuiPlugin>[0]) => {
       title: "Honcho API key",
       placeholder: "hch_...",
       onConfirm: async (apiKey) => {
+        const validationError = validateCloudApiKey(apiKey)
+        if (validationError) {
+          api.ui.dialog.replace(() =>
+            api.ui.DialogAlert({
+              title: "Honcho setup incomplete",
+              message: validationError,
+            }),
+          )
+          return
+        }
         const configPath = await saveSettings({
           baseUrl: DEFAULT_BASE_URL,
           honchoApiKey: apiKey.trim(),
@@ -260,6 +273,12 @@ const tui: TuiPlugin = async (api) => {
 const plugin: TuiPluginModule & { id: string } = {
   id: PACKAGE_ID,
   tui,
+}
+
+export const __testing = {
+  normalizeSettings,
+  statusMessage,
+  validateCloudApiKey,
 }
 
 export default plugin

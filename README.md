@@ -27,6 +27,7 @@ npx @honcho-ai/opencode-honcho install
 ```
 
 This installer expects the `opencode` CLI to already be installed and available on your `PATH`.
+If the installer cannot find `opencode`, restart your shell or source your shell config and run the command again.
 
 ### Step 3: Run Setup in OpenCode
 
