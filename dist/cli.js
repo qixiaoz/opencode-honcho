@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { initializeProject, installGlobalConfig, scaffoldTemplates } from "./scaffold.js";
+import { DEFAULT_PACKAGE_NAME, installGlobalConfig } from "./scaffold.js";
 const usage = () => `Usage:
   opencode-honcho install [--plugin-spec <spec>] [--config-dir <dir>] [--force]
-  opencode-honcho init [--dir <project-root>] [--force] [--package-name <npm-package>]
 
 Examples:
   npx @honcho-ai/opencode-honcho install
-  npx @honcho-ai/opencode-honcho init
-  npx @honcho-ai/opencode-honcho init --dir /path/to/project
 `;
 const runCommand = (command, args, env) => new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -28,37 +25,22 @@ const runCommand = (command, args, env) => new Promise((resolve, reject) => {
         reject(new Error(`${command} ${args.join(" ")} exited with code ${code ?? "unknown"}`));
     });
 });
-const parseInitArgs = (argv) => {
-    let rootDir = process.cwd();
-    let force = false;
-    let packageName = scaffoldTemplates.DEFAULT_PACKAGE_NAME;
-    for (let index = 0; index < argv.length; index += 1) {
-        const arg = argv[index];
-        if (arg === "--dir") {
-            rootDir = argv[index + 1] ? path.resolve(argv[index + 1]) : rootDir;
-            index += 1;
-            continue;
-        }
-        if (arg === "--package-name") {
-            packageName = argv[index + 1] || packageName;
-            index += 1;
-            continue;
-        }
-        if (arg === "--force") {
-            force = true;
-            continue;
-        }
-        if (arg === "--help" || arg === "-h") {
-            console.log(usage());
-            process.exit(0);
-        }
-        throw new Error(`Unknown argument: ${arg}`);
-    }
-    return { rootDir, force, packageName };
+const preferredShellRcFile = () => {
+    const shell = path.basename(process.env.SHELL || "");
+    if (shell === "zsh")
+        return "~/.zshrc";
+    if (shell === "bash")
+        return "~/.bashrc";
+    return "your shell rc file";
 };
+const installPathRecoveryMessage = () => [
+    "OpenCode CLI was not found on PATH.",
+    "Install OpenCode first, then restart your shell or source your shell config before running this installer again.",
+    `For example: source ${preferredShellRcFile()}`,
+].join(" ");
 const parseInstallArgs = (argv) => {
     let force = false;
-    let pluginSpec = scaffoldTemplates.DEFAULT_PACKAGE_NAME;
+    let pluginSpec = DEFAULT_PACKAGE_NAME;
     let configDir;
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index];
@@ -93,7 +75,18 @@ const main = async () => {
     if (command === "install") {
         const options = parseInstallArgs(rest);
         const env = options.configDir ? { OPENCODE_CONFIG_DIR: options.configDir } : undefined;
-        await runCommand("opencode", ["plugin", options.pluginSpec, "--global", ...(options.force ? ["--force"] : [])], env);
+        try {
+            await runCommand("opencode", ["plugin", options.pluginSpec, "--global", ...(options.force ? ["--force"] : [])], env);
+        }
+        catch (error) {
+            if (error.code === "ENOENT") {
+                throw new Error(installPathRecoveryMessage());
+            }
+            if (error instanceof Error && /spawn opencode ENOENT/i.test(error.message)) {
+                throw new Error(installPathRecoveryMessage());
+            }
+            throw error;
+        }
         const config = await installGlobalConfig({
             configDir: options.configDir,
             pluginSpec: options.pluginSpec,
@@ -112,22 +105,7 @@ const main = async () => {
         }, null, 2));
         return;
     }
-    if (command !== "init") {
-        throw new Error(`Unknown command: ${command}`);
-    }
-    const options = parseInitArgs(rest);
-    const result = await initializeProject(options);
-    console.log(JSON.stringify({
-        ok: true,
-        command: "init",
-        rootDir: result.rootDir,
-        createdPaths: result.createdPaths,
-        skippedPaths: result.skippedPaths,
-        nextSteps: [
-            `npm install ${options.packageName}`,
-            "Run OpenCode in this project and use /honcho:setup for cloud setup or set baseUrl to localhost for local Honcho.",
-        ],
-    }, null, 2));
+    throw new Error(`Unknown command: ${command}`);
 };
 main().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);

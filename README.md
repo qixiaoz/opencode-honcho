@@ -27,6 +27,7 @@ npx @honcho-ai/opencode-honcho install
 ```
 
 This installer expects the `opencode` CLI to already be installed and available on your `PATH`.
+If the installer cannot find `opencode`, restart your shell or source your shell config and run the command again.
 
 ### Step 3: Run Setup in OpenCode
 
@@ -75,7 +76,7 @@ The global config is the normal place to start. Project config is only needed wh
 ```jsonc
 {
   "enabled": true,
-  "apiKey": "hch-...",
+  "honchoApiKey": "hch-...",
   "baseUrl": "https://api.honcho.dev",
   "peerName": "",
   "aiPeer": "",
@@ -112,13 +113,13 @@ The global config is the normal place to start. Project config is only needed wh
 
 For Honcho Cloud:
 
-- `apiKey` is required
+- `honchoApiKey` is required
 - `baseUrl` should remain `https://api.honcho.dev`
 
 For self-hosted or local Honcho:
 
 - `baseUrl` should point to your deployment, for example `http://127.0.0.1:8000`
-- `apiKey` is required only if that deployment requires authentication
+- `honchoApiKey` is required only if that deployment requires authentication
 
 If OpenCode is running in Docker or another remote environment, `localhost` may not refer to your machine. The configured `baseUrl` must be reachable from the OpenCode host runtime.
 
