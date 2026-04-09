@@ -1,4 +1,5 @@
 import { type Plugin } from "@opencode-ai/plugin";
+type HonchoSdkModule = typeof import("../vendor/honcho-sdk/dist/index.js");
 type RecallMode = "hybrid" | "context" | "tools";
 type ObservationMode = "directional" | "unified";
 type SessionStrategy = "per-repo" | "per-directory" | "per-session" | "global" | "git-branch" | "chat-instance";
@@ -71,6 +72,7 @@ type PeerTopology = {
 export declare const createHonchoRuntimePlugin: ({ configPath }?: RuntimePluginOptions) => Plugin;
 export declare const HonchoRuntimePlugin: Plugin;
 export declare const __testing: {
+    honchoSdkImportPath: string;
     buildPeerTopology: (handle: Pick<RuntimeHandle, "config" | "userPeerId" | "rootAgentPeerId" | "activeAgentPeerId" | "childAgentPeerId" | "parentAgentObserverPeerId">) => PeerTopology;
     defaultSettings: HonchoSettings;
     deriveSessionScope: ({ workspaceId, sessionStrategy, rootDir, repoName, currentDirectory, sessionId, }: {
@@ -81,15 +83,6 @@ export declare const __testing: {
         currentDirectory: string;
         sessionId: string;
     }) => Promise<string>;
-    initializeProject: ({ rootDir, packageName, force, }?: {
-        rootDir?: string;
-        packageName?: string;
-        force?: boolean;
-    }) => Promise<{
-        rootDir: string;
-        createdPaths: string[];
-        skippedPaths: string[];
-    }>;
     installGlobalConfig: ({ configDir, pluginSpec, }?: {
         configDir?: string;
         pluginSpec?: string;
@@ -100,6 +93,11 @@ export declare const __testing: {
         pluginSpec: string;
     }>;
     normalizeId: (value: string) => string;
+    resolveHonchoCtor: (sdk: unknown) => HonchoSdkModule["Honcho"];
+    sessionPeerAdditions: (topology: PeerTopology) => (readonly [string, {
+        observeMe: boolean;
+        observeOthers: boolean;
+    }])[];
     scaffoldTemplates: {
         DEFAULT_PACKAGE_NAME: string;
         globalConfigDir: () => string;
@@ -146,9 +144,6 @@ export declare const __testing: {
                 template: string;
             };
         };
-        opencodeManifest: () => string;
-        pluginShim: (packageName: string) => string;
-        projectOverrideJson: () => string;
     };
 };
 export default HonchoRuntimePlugin;

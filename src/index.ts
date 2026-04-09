@@ -1,13 +1,39 @@
 import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
-import * as HonchoSDK from "../vendor/honcho-sdk/dist/index.js"
 import { tool, type Plugin, type PluginInput } from "@opencode-ai/plugin"
-import { initializeProject, installGlobalConfig, scaffoldTemplates } from "./scaffold.js"
+import { installGlobalConfig, scaffoldTemplates } from "./scaffold.js"
 
-const { Honcho } = HonchoSDK
+const HONCHO_SDK_IMPORT_PATH = "../vendor/honcho-sdk/dist/index.js"
 
-type HonchoClient = InstanceType<typeof HonchoSDK.Honcho>
+type HonchoSdkModule = typeof import("../vendor/honcho-sdk/dist/index.js")
+
+const resolveHonchoCtor = (sdk: unknown): HonchoSdkModule["Honcho"] => {
+  if (!sdk || typeof sdk !== "object") {
+    throw new Error("Honcho SDK constructor is unavailable")
+  }
+
+  const direct = (sdk as { Honcho?: unknown }).Honcho
+  if (typeof direct === "function") {
+    return direct as HonchoSdkModule["Honcho"]
+  }
+
+  const fallback = (sdk as { default?: unknown }).default
+  if (fallback) {
+    return resolveHonchoCtor(fallback)
+  }
+
+  throw new Error("Honcho SDK constructor is unavailable")
+}
+
+let honchoCtorPromise: Promise<HonchoSdkModule["Honcho"]> | null = null
+
+const loadHonchoCtor = () => {
+  honchoCtorPromise ??= import(HONCHO_SDK_IMPORT_PATH).then((sdk) => resolveHonchoCtor(sdk))
+  return honchoCtorPromise
+}
+
+type HonchoClient = InstanceType<HonchoSdkModule["Honcho"]>
 
 type RecallMode = "hybrid" | "context" | "tools"
 type ObservationMode = "directional" | "unified"
@@ -245,7 +271,7 @@ const trimHyphenEdges = (value: string) => {
 }
 
 const normalizeId = (value: string) =>
-  trimHyphenEdges(value.toLowerCase().replace(/[^a-z0-9:_-]+/g, "-")) || "default"
+  trimHyphenEdges(value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")) || "default"
 
 const isLocalBaseUrl = (value: string) => {
   if (!value.trim()) return false
@@ -812,12 +838,16 @@ const buildPeerTopology = (handle: Pick<
   }
 }
 
+const sessionPeerAdditions = (topology: PeerTopology) =>
+  Object.entries(topology.sessionPeerConfigs).map(([peerId, config]) => [peerId, config] as const)
+
 const createActiveRuntime = async (
   pluginInput: PluginInput,
   input: Record<string, unknown> | undefined,
   configPathOverride?: string,
 ): Promise<ActiveRuntime> => {
   const handle = await deriveRuntimeHandle(pluginInput, input, configPathOverride)
+  const Honcho = await loadHonchoCtor()
   const honcho = new Honcho({
     apiKey: handle.config.apiKey || undefined,
     baseURL: handle.config.baseUrl || undefined,
@@ -830,7 +860,7 @@ const createActiveRuntime = async (
     configuration: { observeMe: true },
   })
   const session = await honcho.session(handle.sessionKey)
-  await session.addPeers(buildPeerTopology(handle).sessionPeerConfigs as never)
+  await session.addPeers(sessionPeerAdditions(buildPeerTopology(handle)) as never)
   return { ...handle, honcho, session, userPeer, agentPeer }
 }
 
@@ -1315,55 +1345,76 @@ export const createHonchoRuntimePlugin =
             persistGlobal: tool.schema.boolean().optional(),
           },
           async execute(args, context) {
-            const handle = await deriveRuntimeHandle(pluginInput, { sessionID: context.sessionID }, configPath)
-            const shouldPersistGlobal = args.persistGlobal !== false
-            const globalPersisted = await readConfigFile(handle.globalConfigPath)
-            const nextGlobal = { ...globalPersisted }
-            const nextHosts = isRecord(nextGlobal.hosts) ? { ...nextGlobal.hosts } : {}
-            const nextHostEntry = hostScopedSettings(nextHosts.opencode) ?? {
-              workspace: "opencode",
-              aiPeer: "opencode",
-              linkedHosts: [],
-            }
-            const providedApiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : ""
-            const providedBaseUrl = typeof args.baseUrl === "string" ? args.baseUrl.trim() : ""
-            const effectiveApiKey = providedApiKey || handle.config.apiKey || ""
-            const persistedFields: string[] = []
+            let resolvedGlobalConfigPath = globalSettingsPath()
+            try {
+              const handle = await deriveRuntimeHandle(pluginInput, { sessionID: context.sessionID }, configPath)
+              resolvedGlobalConfigPath = handle.globalConfigPath
+              const shouldPersistGlobal = args.persistGlobal !== false
+              const globalPersisted = await readConfigFile(handle.globalConfigPath)
+              const nextGlobal = { ...globalPersisted }
+              const nextHosts = isRecord(nextGlobal.hosts) ? { ...nextGlobal.hosts } : {}
+              const nextHostEntry = hostScopedSettings(nextHosts.opencode) ?? {
+                workspace: "opencode",
+                aiPeer: "opencode",
+                linkedHosts: [],
+              }
+              const providedApiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : ""
+              const providedBaseUrl = typeof args.baseUrl === "string" ? args.baseUrl.trim() : ""
+              const effectiveApiKey = providedApiKey || handle.config.apiKey || ""
+              const effectiveBaseUrl =
+                providedBaseUrl || (providedApiKey ? DEFAULT_SETTINGS.baseUrl : handle.config.baseUrl || DEFAULT_SETTINGS.baseUrl)
+              const persistedFields: string[] = []
 
-            if (shouldPersistGlobal) {
-              nextGlobal.globalOverride = nextGlobal.globalOverride === true
-              if (effectiveApiKey) {
-                setSettingValue(nextGlobal, "apiKey", effectiveApiKey)
-                persistedFields.push("apiKey")
+              if (shouldPersistGlobal) {
+                nextGlobal.globalOverride = nextGlobal.globalOverride === true
+                if (effectiveApiKey) {
+                  setSettingValue(nextGlobal, "apiKey", effectiveApiKey)
+                  persistedFields.push("apiKey")
+                }
+                if (effectiveBaseUrl && (providedBaseUrl || providedApiKey)) {
+                  setSettingValue(nextGlobal, "baseUrl", effectiveBaseUrl)
+                  persistedFields.push("baseUrl")
+                }
+                nextHosts.opencode = nextHostEntry
+                nextGlobal.hosts = nextHosts
+                if (persistedFields.length > 0) {
+                  await writeSettings(handle.globalConfigPath, nextGlobal)
+                } else if (!isRecord(globalPersisted.hosts) || !isRecord(globalPersisted.hosts.opencode)) {
+                  await writeSettings(handle.globalConfigPath, nextGlobal)
+                }
               }
-              if (providedBaseUrl) {
-                setSettingValue(nextGlobal, "baseUrl", providedBaseUrl)
-                persistedFields.push("baseUrl")
-              }
-              nextHosts.opencode = nextHostEntry
-              nextGlobal.hosts = nextHosts
-              if (persistedFields.length > 0) {
-                await writeSettings(handle.globalConfigPath, nextGlobal)
-              } else if (!isRecord(globalPersisted.hosts) || !isRecord(globalPersisted.hosts.opencode)) {
-                await writeSettings(handle.globalConfigPath, nextGlobal)
-              }
-            }
 
-            return JSON.stringify(
-              {
-                ok: Boolean(effectiveApiKey) || isLocalBaseUrl(providedBaseUrl || handle.config.baseUrl),
-                globalConfigPath: handle.globalConfigPath,
-                persistedFields,
-                message: effectiveApiKey
-                  ? "Honcho setup is ready."
-                  : isLocalBaseUrl(providedBaseUrl || handle.config.baseUrl)
-                    ? "Honcho setup is ready for local mode."
-                    : "No Honcho API key is configured. Pass one to /honcho:setup <key> or set HONCHO_API_KEY before running setup. For a local Honcho instance, set baseUrl to http://127.0.0.1:8000 or http://localhost:8000.",
-                status: await runtimeStatus({ sessionID: context.sessionID }),
-              },
-              null,
-              2,
-            )
+              const configured = Boolean(effectiveApiKey) || isLocalBaseUrl(effectiveBaseUrl)
+              return JSON.stringify(
+                {
+                  ok: configured,
+                  globalConfigPath: handle.globalConfigPath,
+                  persistedFields,
+                  message: effectiveApiKey
+                    ? effectiveBaseUrl === DEFAULT_SETTINGS.baseUrl
+                      ? `Honcho setup is ready for cloud mode at ${DEFAULT_SETTINGS.baseUrl}.`
+                      : `Honcho setup is ready with endpoint ${effectiveBaseUrl}.`
+                    : isLocalBaseUrl(effectiveBaseUrl)
+                      ? `Honcho setup is ready for local mode at ${effectiveBaseUrl}.`
+                      : "No Honcho API key is configured. Pass one to /honcho:setup <key> or set HONCHO_API_KEY before running setup. For a local Honcho instance, set baseUrl to http://127.0.0.1:8000 or http://localhost:8000.",
+                  status: await runtimeStatus({ sessionID: context.sessionID }),
+                },
+                null,
+                2,
+              )
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error)
+              return JSON.stringify(
+                {
+                  ok: false,
+                  globalConfigPath: resolvedGlobalConfigPath,
+                  error: `Failed to persist Honcho setup: ${detail}`,
+                  message: "Honcho setup could not be saved. Check the config path and filesystem permissions, then retry.",
+                },
+                null,
+                2,
+              )
+            }
           },
         }),
         honcho_status: tool({
@@ -1497,12 +1548,14 @@ export const createHonchoRuntimePlugin =
 
 export const HonchoRuntimePlugin = createHonchoRuntimePlugin()
 export const __testing = {
+  honchoSdkImportPath: HONCHO_SDK_IMPORT_PATH,
   buildPeerTopology,
   defaultSettings: DEFAULT_SETTINGS,
   deriveSessionScope,
-  initializeProject,
   installGlobalConfig,
   normalizeId,
+  resolveHonchoCtor,
+  sessionPeerAdditions,
   scaffoldTemplates,
 }
 export default HonchoRuntimePlugin

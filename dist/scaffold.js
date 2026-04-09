@@ -1,7 +1,7 @@
-import { mkdir, writeFile, access, readFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-const DEFAULT_PACKAGE_NAME = "@honcho-ai/opencode-honcho";
+export const DEFAULT_PACKAGE_NAME = "@honcho-ai/opencode-honcho";
 const opencodeCommands = () => ({
     "honcho:setup": {
         description: "Validate Honcho connectivity and repair OpenCode config.",
@@ -28,20 +28,14 @@ const opencodeCommands = () => ({
         template: "Call `honcho_set_config` with field `recallMode` and the requested value.",
     },
     "honcho:write": {
-        description: "Change the OpenCode Honcho durable write policy.",
-        template: "Call `honcho_set_config` with field `writeFrequency` and the requested value.",
+        description: "Change the OpenCode Honcho write frequency or write policy. This command does not create memory.",
+        template: "Call `honcho_set_config` with field `writeFrequency` and the requested value. This command only updates the write policy and does not create memory.",
     },
     "honcho:interview": {
-        description: "Capture durable user preferences into Honcho.",
+        description: "Capture durable memory into Honcho.",
         template: "Ask concise durable-memory questions, or if direct text is provided call `honcho_create_conclusion` exactly once with that exact remaining argument text verbatim.",
     },
 });
-const opencodeManifest = () => JSON.stringify({
-    $schema: "https://opencode.ai/config.json",
-    command: opencodeCommands(),
-}, null, 2) + "\n";
-const pluginShim = (packageName) => `export { default } from "${packageName}"\n`;
-const projectOverrideJson = () => "{}\n";
 const globalConfigDir = () => path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "opencode");
 const readJsonFile = async (filePath) => {
     try {
@@ -93,63 +87,9 @@ export const installGlobalConfig = async ({ configDir = globalConfigDir(), plugi
         pluginSpec,
     };
 };
-const writeFileIfNeeded = async ({ filePath, content, force, }) => {
-    if (!force) {
-        try {
-            await access(filePath);
-            return false;
-        }
-        catch {
-            // File does not exist yet.
-        }
-    }
-    await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, content, "utf-8");
-    return true;
-};
-export const initializeProject = async ({ rootDir = process.cwd(), packageName = DEFAULT_PACKAGE_NAME, force = false, } = {}) => {
-    const absoluteRoot = path.resolve(rootDir);
-    const targets = [
-        {
-            filePath: path.join(absoluteRoot, "opencode.json"),
-            content: opencodeManifest(),
-        },
-        {
-            filePath: path.join(absoluteRoot, ".opencode", "plugins", "honcho-runtime.js"),
-            content: pluginShim(packageName),
-        },
-        {
-            filePath: path.join(absoluteRoot, ".opencode", "honcho.json"),
-            content: projectOverrideJson(),
-        },
-    ];
-    const createdPaths = [];
-    const skippedPaths = [];
-    for (const target of targets) {
-        const wrote = await writeFileIfNeeded({
-            filePath: target.filePath,
-            content: target.content,
-            force,
-        });
-        if (wrote) {
-            createdPaths.push(target.filePath);
-        }
-        else {
-            skippedPaths.push(target.filePath);
-        }
-    }
-    return {
-        rootDir: absoluteRoot,
-        createdPaths,
-        skippedPaths,
-    };
-};
 export const scaffoldTemplates = {
     DEFAULT_PACKAGE_NAME,
     globalConfigDir,
     installGlobalConfig,
     opencodeCommands,
-    opencodeManifest,
-    pluginShim,
-    projectOverrideJson,
 };

@@ -17,24 +17,7 @@ This installer:
 - registers `@honcho-ai/opencode-honcho` with OpenCode
 - enables both native server and TUI plugin targets
 - writes the Honcho command templates into global OpenCode config
-
-If you want the lower-level native OpenCode command directly, this is the equivalent runtime install path:
-
-```bash
-opencode plugin @honcho-ai/opencode-honcho --global
-```
-
-If you also want project-local server command scaffolding for non-interactive or config-backed command flows, run:
-
-```bash
-npx @honcho-ai/opencode-honcho init
-```
-
-The init command creates:
-
-- `opencode.json`
-- `.opencode/plugins/honcho-runtime.js`
-- `.opencode/honcho.json`
+- activates the plugin globally for all OpenCode projects
 
 ## Quick Setup
 
@@ -43,11 +26,19 @@ The init command creates:
 1. Install the plugin with `npx @honcho-ai/opencode-honcho install`.
 2. Start OpenCode.
 3. Run `/honcho:setup` from slash autocomplete or the command palette.
-4. If you are using Honcho Cloud, keep the default cloud deployment and enter your Honcho API key.
-5. If you are using a self-hosted or local Honcho instance, choose `Self-hosted / local` and set `baseUrl` to your Honcho endpoint such as `http://127.0.0.1:8000`.
+4. Keep the default `Honcho Cloud` deployment unless you explicitly want a self-hosted or local Honcho instance.
+5. Enter your Honcho API key.
 6. Run `/honcho:status` to verify the runtime.
 
-If you want local project scaffolding for project-specific command execution, run `npx @honcho-ai/opencode-honcho init` from the project root after installing the plugin.
+### Self-hosted or Local Honcho
+
+1. Install the plugin with `npx @honcho-ai/opencode-honcho install`.
+2. Start OpenCode.
+3. Run `/honcho:setup`.
+4. Choose `Self-hosted / local`.
+5. Set `baseUrl` to your Honcho endpoint such as `http://127.0.0.1:8000`.
+6. Enter an API key only if your deployment requires one.
+7. Run `/honcho:status` to verify the runtime.
 
 If you use a self-hosted or local Honcho deployment, `baseUrl` must be reachable from the OpenCode host runtime. If OpenCode is running in Docker or a remote environment, `localhost` may not point at your machine.
 
@@ -97,14 +88,11 @@ The plugin exposes the main operator workflow directly:
 - `/honcho:setup`
 - `/honcho:status`
 - `/honcho:settings`
-
-Project-local scaffolding via `npx @honcho-ai/opencode-honcho init` also adds:
-
 - `/honcho:set`
 - `/honcho:unset`
 - `/honcho:mode`
-- `/honcho:write`
-- `/honcho:interview`
+- `/honcho:write` to change `writeFrequency`. This updates policy only and does not create memory.
+- `/honcho:interview` to create durable memory or capture durable preferences.
 
 ## Configuration
 

@@ -20,6 +20,16 @@ test("installGlobalConfig writes plugin and Honcho commands into global opencode
   assert.deepEqual(config.plugin, ["@honcho-ai/opencode-honcho"])
   assert.ok(config.command["honcho:setup"])
   assert.ok(config.command["honcho:status"])
+  assert.ok(config.command["honcho:settings"])
+  assert.ok(config.command["honcho:set"])
+  assert.ok(config.command["honcho:unset"])
+  assert.ok(config.command["honcho:mode"])
+  assert.ok(config.command["honcho:write"])
+  assert.ok(config.command["honcho:interview"])
+  assert.match(config.command["honcho:write"].description, /write frequency|write policy/i)
+  assert.match(config.command["honcho:write"].template, /does not create memory/i)
+  assert.match(config.command["honcho:interview"].description, /durable memory/i)
+  assert.match(config.command["honcho:interview"].template, /honcho_create_conclusion/)
 })
 
 test("installGlobalConfig preserves existing config and avoids duplicate plugin specs", async () => {
