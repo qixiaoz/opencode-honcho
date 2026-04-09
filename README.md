@@ -1,72 +1,103 @@
-# @plasticlabs/opencode-honcho
+# @honcho-ai/opencode-honcho
 
-TypeScript-native Honcho plugin runtime for OpenCode.
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.honcho.dev/llms.txt
+> Use this file to discover all available pages before exploring further.
 
-This package is the publishable runtime that powers the generated local OpenCode plugin bundle. It uses the Honcho TypeScript SDK directly and integrates with OpenCode's native plugin hooks for:
+# OpenCode
 
-- prompt-level memory injection
-- automatic durable memory writes
-- Claude-style peer mapping by default with optional hierarchical multi-agent peer mapping
-- project-local overrides plus global OpenCode Honcho config
-- native OpenCode tools and slash-command control
+> Add AI-native memory to OpenCode
 
-## Repository Layout
+Give OpenCode long-term memory that survives context wipes, session restarts, and fresh chats. Honcho remembers what you're working on, durable preferences, and prior context across your projects.
 
-- `src/*.ts` is the source of truth
-- `dist/*.js` is the checked-in runtime artifact used by emitted OpenCode bundles
-- `vendor/honcho-sdk` and `vendor/zod` are vendored runtime dependencies used to avoid plugin startup resolution issues inside OpenCode
+## Quick Start
 
-## Setup
+### Step 1: Get Your Honcho API Key
 
-### Development
+1. Go to **[app.honcho.dev](https://app.honcho.dev)**
+2. Sign up or log in
+3. Copy your API key
 
-```bash
-npm install
-npm run check
-npm run build
-```
+### Step 2: Install the Plugin
 
-### Package Validation
+This package installs the Honcho plugin into OpenCode and writes the Honcho command templates into your global OpenCode config.
 
 ```bash
-npm pack
+npx @honcho-ai/opencode-honcho install
 ```
 
-### OpenCode Runtime Usage
+This installer expects the `opencode` CLI to already be installed and available on your `PATH`.
 
-This package is meant to be consumed by an emitted local OpenCode bundle, not installed as a standalone top-level OpenCode command.
+### Step 3: Run Setup in OpenCode
 
-The generated OpenCode project bundle should contain:
+1. Start OpenCode
+2. Run `/honcho:setup`
+3. Keep the default `Honcho Cloud` option unless you explicitly want a self-hosted or local endpoint
+4. Enter your Honcho API key
+5. Run `/honcho:status` to verify the runtime
 
-- `opencode.json`
-- `.opencode/plugins/honcho-runtime.js`
-- `.opencode/package.json`
-- `.opencode/honcho.json`
+### Step 4: (Optional) Kickstart with an Interview
 
-The thin plugin shim imports this package's `dist/index.js`.
+```text
+/honcho:interview
+```
 
-## Runtime Config
+This captures durable preferences or stable project context into Honcho memory.
 
-The runtime uses two config layers:
+## What You Get
 
-- global OpenCode Honcho config: `~/.config/opencode/honcho.json`
-- project overrides: `.opencode/honcho.json`
+- **Persistent Memory** - OpenCode can retain durable context across sessions
+- **Cloud or Local Deployments** - Use Honcho Cloud or point at a self-hosted or local Honcho instance
+- **Workspace Mapping** - OpenCode projects map to Honcho workspaces
+- **Session Mapping** - Sessions can be scoped per directory, repo, branch, chat instance, or globally
+- **Durable Writes** - Honcho can retain stable conclusions and session context
+- **Memory Retrieval** - Search memory, query Honcho knowledge, and inject relevant context into prompts
+- **Peer Modeling** - Supports the default classic peer model and optional hierarchical modeling for delegated agent flows
 
-Effective precedence is:
+## Installation Output
 
-1. project `.opencode/honcho.json`
-2. global `~/.config/opencode/honcho.json`
-3. environment
-4. built defaults
+The installer:
 
-The default global host mapping is Claude-style under `hosts.opencode`:
+- registers `@honcho-ai/opencode-honcho` with OpenCode
+- enables both native server and TUI plugin targets
+- writes Honcho command templates into global OpenCode config
+- activates the plugin globally for all OpenCode projects
 
-```json
+## Configuration
+
+OpenCode Honcho configuration lives in:
+
+- global config: `~/.config/opencode/honcho.json`
+- optional project override: `.opencode/honcho.json`
+
+The global config is the normal place to start. Project config is only needed when a specific repo should behave differently.
+
+```jsonc
 {
+  "enabled": true,
   "apiKey": "hch-...",
-  "peerName": "alice",
+  "baseUrl": "https://api.honcho.dev",
+  "peerName": "",
+  "aiPeer": "",
+  "workspace": "",
   "globalOverride": false,
+  "linkedHosts": [],
+  "recallMode": "hybrid",
+  "observation": "directional",
   "peerModel": "classic",
+  "writeFrequency": "async",
+  "sessionStrategy": "per-directory",
+  "dialecticReasoningLevel": "low",
+  "dialecticDynamic": true,
+  "dialecticMaxChars": 600,
+  "messageMaxChars": 25000,
+  "saveMessages": true,
+  "contextRefresh": {
+    "messageThreshold": 30,
+    "ttlSeconds": 300,
+    "skipTrivialPrompts": true,
+    "useSessionStartDialectic": true
+  },
   "hosts": {
     "opencode": {
       "workspace": "opencode",
@@ -77,127 +108,76 @@ The default global host mapping is Claude-style under `hosts.opencode`:
 }
 ```
 
-For a local Honcho instance, set `baseUrl` to `http://127.0.0.1:8000` or `http://localhost:8000`. Localhost mode is allowed without an API key; cloud mode still expects one.
+### Cloud vs Local
 
-## OpenCode Behavior
+For Honcho Cloud:
 
-The runtime intentionally reflects current OpenCode host capabilities:
+- `apiKey` is required
+- `baseUrl` should remain `https://api.honcho.dev`
 
-- `hard_command_interception`: unsupported
-- `pre_model_command_execute`: supported
-- `structured_question_ui`: unsupported
-- `persistent_background_runtime`: unsupported
+For self-hosted or local Honcho:
 
-The runtime follows Claude-style memory layering:
+- `baseUrl` should point to your deployment, for example `http://127.0.0.1:8000`
+- `apiKey` is required only if that deployment requires authentication
 
-- deeper warmup at session start
-- cached lightweight prompt injection on normal turns
-- explicit deep retrieval through Honcho tools
+If OpenCode is running in Docker or another remote environment, `localhost` may not refer to your machine. The configured `baseUrl` must be reachable from the OpenCode host runtime.
 
-## OpenCode to Honcho Mapping
+### Session Strategies
 
-### Config Mapping
+| Strategy | Behavior | Best for |
+| --- | --- | --- |
+| `per-directory` | One session per working directory | Default project memory |
+| `per-repo` | One session per repository | Repos with multiple entry directories |
+| `git-branch` | Session changes with the current branch | Branch-specific workflows |
+| `per-session` | New session for each OpenCode session id | Short-lived isolated work |
+| `chat-instance` | Session follows the current chat instance | Highly ephemeral usage |
+| `global` | One session for everything | Shared memory across all work |
 
-- Global user-wide config: `~/.config/opencode/honcho.json`
-- Project overrides: `.opencode/honcho.json`
-- Fallback environment: `HONCHO_API_KEY`, `HONCHO_URL`, `HONCHO_BASE_URL`, `HONCHO_PEER_NAME`, `HONCHO_WORKSPACE`
+## Operator Commands
 
-Effective precedence is:
+| Command | Description |
+| --- | --- |
+| `/honcho:setup` | First-time setup for cloud or local Honcho |
+| `/honcho:status` | Show effective Honcho status for the current OpenCode project |
+| `/honcho:settings` | Show effective config values and config paths |
+| `/honcho:set` | Persist a config field in `.opencode/honcho.json` |
+| `/honcho:unset` | Reset a project config field back to its default |
+| `/honcho:mode` | Change `recallMode` |
+| `/honcho:write` | Change `writeFrequency` only. This does not create memory |
+| `/honcho:interview` | Capture durable memory or preferences into Honcho |
 
-1. project `.opencode/honcho.json`
-2. global `~/.config/opencode/honcho.json`
-3. environment
-4. built defaults
+## Agent Tools
 
-### Workspace Mapping
+The plugin exposes these tools inside OpenCode:
 
-- `workspace` maps to the Honcho workspace namespace
-- Prefer top-level `workspace` when `globalOverride` is enabled
-- Otherwise prefer `hosts.opencode.workspace`
-- Fall back to repo- or project-derived workspace only when no explicit workspace is configured
+| Tool | Description |
+| --- | --- |
+| `honcho_setup` | Validate setup and persist shared credentials or endpoint settings |
+| `honcho_status` | Show effective runtime status |
+| `honcho_get_config` | Read effective and persisted settings |
+| `honcho_set_config` | Update a persisted project setting |
+| `honcho_search` | Search Honcho session memory |
+| `honcho_chat` | Query Honcho for reasoning-backed context |
+| `honcho_create_conclusion` | Save a durable memory conclusion |
 
-This makes OpenCode align more closely with Claude Code's host-aware workspace model while still allowing per-project overrides.
+## Plugin Surfaces
 
-### Peer Mapping
+The plugin uses these OpenCode plugin capabilities:
 
-- `peerName` maps to the human user peer
-- `aiPeer` maps to the root OpenCode agent peer
-- `peerModel=classic` keeps a Claude Code-style durable model where delegated sessions stay on the stable `userPeer + aiPeer`
-- `peerModel=hierarchical` enables explicit child and parent-observer peers for delegated child-agent sessions
+- `event`
+- `chat.message`
+- `tool.execute.after`
+- `command.execute.before`
+- `experimental.chat.system.transform`
+- `experimental.session.compacting`
+- `shell.env`
+- `tool`
 
-The default `peerModel` is `classic`. Switch to the OpenCode-native hierarchical model by setting `peerModel=hierarchical` in config or with `/honcho:set peerModel hierarchical`.
+## Development
 
-Default peer observation semantics are:
-
-- user peer: `observeMe=true`, `observeOthers=false`
-- root agent peer: `observeMe=true`, `observeOthers=true`
-- child agent peer in `hierarchical` mode: `observeMe=true`, `observeOthers=false`, `sessionScoped=true`
-- parent observer peer in `hierarchical` mode: `observeMe=false`, `observeOthers=true`, `modelsOnly=[childPeer]`
-
-### Session Mapping
-
-- `sessionStrategy=per-repo`: one stable Honcho session per workspace and agent lineage
-- `sessionStrategy=per-directory`: one stable Honcho session per working directory and agent lineage
-- `sessionStrategy=per-session`: one Honcho session per OpenCode session id
-- `sessionStrategy=chat-instance`: Claude Code-style alias for one Honcho session per OpenCode session id
-- `sessionStrategy=git-branch`: Claude Code-style branch-scoped session key when the current git branch is available, with repo-name fallback when it is not
-- `sessionStrategy=global`: one long-lived Honcho session for the configured workspace
-
-Sessions are enabled by default. The default strategy is `per-directory`.
-
-### Hook Mapping
-
-- `event`: session lifecycle, warmup, and cleanup
-- `chat.message`: observe user messages and trigger durable write heuristics
-- `tool.execute.after`: observe tool outputs and trigger durable write heuristics
-- `experimental.chat.system.transform`: inject cached Honcho prompt memory
-- `experimental.session.compacting`: preserve continuity across compaction
-- `shell.env`: expose resolved Honcho env into shell context
-
-### Tool and Command Mapping
-
-OpenCode-native tools provided by the runtime:
-
-- `honcho_setup`
-- `honcho_status`
-- `honcho_get_config`
-- `honcho_set_config`
-- `honcho_search`
-- `honcho_chat`
-- `honcho_create_conclusion`
-
-Expected OpenCode command layer from the emitted bundle:
-
-- `/honcho:setup`
-- `/honcho:status`
-- `/honcho:settings`
-- `/honcho:set`
-- `/honcho:unset`
-- `/honcho:mode`
-- `/honcho:write`
-- `/honcho:interview`
-
-### Memory Layering
-
-The runtime follows a Claude-style layering model:
-
-- session-start deep warmup for stable user, agent, and summary context
-- cached lightweight prompt injection on normal turns
-- explicit deep retrieval through Honcho tools when more context is needed
-
-## Publishing
-
-This repo is the npm package surface that should be published as `@plasticlabs/opencode-honcho`.
-
-It should include:
-
-- `src/`
-- `dist/`
-- `vendor/`
-- `README.md`
-- `CHANGELOG.md`
-- `LICENSE`
-- `package.json`
-- `tsconfig.json`
-
-It should not include generated project `.opencode/` bundles or machine-local config.
+```bash
+npm install
+npm run build
+npm test
+npm run check
+```
