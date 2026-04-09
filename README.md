@@ -16,40 +16,27 @@ The runtime uses the Honcho TypeScript SDK directly and integrates with OpenCode
 
 The simplest setup is:
 
-1. Install the runtime into your OpenCode project-local plugin environment.
-2. Add the thin plugin shim that re-exports the package.
+1. Install the package in your project.
+2. Run the package init command once.
 3. Add global Honcho config for either cloud or localhost.
 4. Start OpenCode in that project.
 
-### Install The Runtime
+### Install And Initialize
 
-Create `.opencode/package.json`:
-
-```json
-{
-  "name": "opencode-local-plugins",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@honcho-ai/opencode-honcho": "latest"
-  }
-}
-```
-
-Install it:
+From your project root:
 
 ```bash
-cd .opencode
-npm install
+npm install @honcho-ai/opencode-honcho
+npx @honcho-ai/opencode-honcho init
 ```
 
-### Add The Plugin Shim
+That creates:
 
-Create `.opencode/plugins/honcho-runtime.js`:
+- `opencode.json`
+- `.opencode/plugins/honcho-runtime.js`
+- `.opencode/honcho.json`
 
-```js
-export { default } from "@honcho-ai/opencode-honcho"
-```
+The generated plugin shim imports the installed npm package directly, so you do not need to hand-write the `.opencode` runtime files.
 
 ### Cloud Setup
 
@@ -99,7 +86,7 @@ Create `~/.config/opencode/honcho.json`:
 
 ### Optional Project Override
 
-If you need per-project behavior, create `.opencode/honcho.json`:
+If you need per-project behavior, edit `.opencode/honcho.json`:
 
 ```json
 {
@@ -110,7 +97,7 @@ If you need per-project behavior, create `.opencode/honcho.json`:
 
 ### Start OpenCode
 
-Run OpenCode from the project root after the plugin files exist under `.opencode/`.
+Run OpenCode from the project root after the init command creates the local plugin files.
 
 If you are using the full emitted bundle, you should also have the Honcho slash commands:
 
