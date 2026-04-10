@@ -1,10 +1,4 @@
-# @honcho-ai/opencode-honcho
-
-> ## Documentation Index
-> Fetch the complete documentation index at: https://docs.honcho.dev/llms.txt
-> Use this file to discover all available pages before exploring further.
-
-# OpenCode
+# Honcho Plugin for Opencode
 
 > Add AI-native memory to OpenCode
 
