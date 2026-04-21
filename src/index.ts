@@ -2,38 +2,8 @@ import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { tool, type Plugin, type PluginInput } from "@opencode-ai/plugin"
+import { Honcho } from "@honcho-ai/sdk"
 import { installGlobalConfig, scaffoldTemplates } from "./scaffold.js"
-
-const HONCHO_SDK_IMPORT_PATH = "../vendor/honcho-sdk/dist/index.js"
-
-type HonchoSdkModule = typeof import("../vendor/honcho-sdk/dist/index.js")
-
-const resolveHonchoCtor = (sdk: unknown): HonchoSdkModule["Honcho"] => {
-  if (!sdk || typeof sdk !== "object") {
-    throw new Error("Honcho SDK constructor is unavailable")
-  }
-
-  const direct = (sdk as { Honcho?: unknown }).Honcho
-  if (typeof direct === "function") {
-    return direct as HonchoSdkModule["Honcho"]
-  }
-
-  const fallback = (sdk as { default?: unknown }).default
-  if (fallback) {
-    return resolveHonchoCtor(fallback)
-  }
-
-  throw new Error("Honcho SDK constructor is unavailable")
-}
-
-let honchoCtorPromise: Promise<HonchoSdkModule["Honcho"]> | null = null
-
-const loadHonchoCtor = () => {
-  honchoCtorPromise ??= import(HONCHO_SDK_IMPORT_PATH).then((sdk) => resolveHonchoCtor(sdk))
-  return honchoCtorPromise
-}
-
-type HonchoClient = InstanceType<HonchoSdkModule["Honcho"]>
 
 type RecallMode = "hybrid" | "context" | "tools"
 type ObservationMode = "directional" | "unified"
@@ -48,12 +18,6 @@ type ContextRefreshSettings = {
   useSessionStartDialectic: boolean
 }
 
-type HostScopedSettings = {
-  workspace: string
-  aiPeer: string
-  linkedHosts: string[]
-}
-
 export type RuntimePluginOptions = {
   configPath?: string
 }
@@ -66,7 +30,6 @@ type HonchoSettings = {
   aiPeer: string
   workspace: string
   globalOverride: boolean
-  linkedHosts: string[]
   recallMode: RecallMode
   observation: ObservationMode
   peerModel: PeerModel
@@ -79,6 +42,8 @@ type HonchoSettings = {
   saveMessages: boolean
   contextRefresh: ContextRefreshSettings
 }
+
+type HostScopedSettings = Partial<Omit<HonchoSettings, "apiKey" | "peerName">>
 
 type RuntimeHandle = {
   rootDir: string
@@ -96,10 +61,10 @@ type RuntimeHandle = {
 }
 
 type ActiveRuntime = RuntimeHandle & {
-  honcho: HonchoClient
-  session: Awaited<ReturnType<HonchoClient["session"]>>
-  userPeer: Awaited<ReturnType<HonchoClient["peer"]>>
-  agentPeer: Awaited<ReturnType<HonchoClient["peer"]>>
+  honcho: Honcho
+  session: Awaited<ReturnType<Honcho["session"]>>
+  userPeer: Awaited<ReturnType<Honcho["peer"]>>
+  agentPeer: Awaited<ReturnType<Honcho["peer"]>>
 }
 
 type SessionState = {
@@ -108,6 +73,8 @@ type SessionState = {
   lastInjectedContext: string | null
   recentConclusions: string[]
   conclusionFingerprints: Set<string>
+  capturedAssistantMessageIds: Set<string>
+  assistantMessageParts: Map<string, { sessionID: string; parts: Map<string, string> }>
   promptCount: number
   lastPromptRefreshAt: number | null
   lastTopicKey: string | null
@@ -141,8 +108,10 @@ type PeerTopology = {
 
 const SETTINGS_FILE_NAME = "honcho.json"
 const SETTINGS_DIR_NAME = ".opencode"
-const GLOBAL_SETTINGS_DIR_NAME = "opencode"
-const GLOBAL_SETTINGS_FILE_PATH = "honcho.json"
+const SHARED_SETTINGS_DIR_NAME = ".honcho"
+const SHARED_SETTINGS_FILE_NAME = "config.json"
+const LEGACY_GLOBAL_SETTINGS_DIR_NAME = "opencode"
+const LEGACY_GLOBAL_SETTINGS_FILE_NAME = "honcho.json"
 const PERSISTED_API_KEY_FIELD = "honchoApiKey"
 const LEGACY_API_KEY_FIELD = "apiKey"
 const RUNTIME_SERVICE = "opencode-honcho"
@@ -156,7 +125,6 @@ const DEFAULT_SETTINGS: HonchoSettings = {
   aiPeer: "",
   workspace: "",
   globalOverride: false,
-  linkedHosts: [],
   recallMode: "hybrid",
   observation: "directional",
   peerModel: "classic",
@@ -205,7 +173,6 @@ const TOP_LEVEL_SETTING_FIELDS = new Set<keyof HonchoSettings>([
   "aiPeer",
   "workspace",
   "globalOverride",
-  "linkedHosts",
   "recallMode",
   "observation",
   "peerModel",
@@ -299,10 +266,102 @@ const hasConfiguredAuth = (settings: HonchoSettings) => Boolean(settings.apiKey)
 const readTextPart = (part: unknown) =>
   isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : null
 
+const readVisibleTextPart = (part: unknown) => {
+  if (!isRecord(part) || part.type !== "text" || typeof part.text !== "string") {
+    return null
+  }
+  if (part.ignored === true) {
+    return null
+  }
+  const text = part.text.trim()
+  return text ? text : null
+}
+
 const extractText = (parts: unknown) =>
   Array.isArray(parts)
     ? parts.map(readTextPart).filter((value): value is string => Boolean(value)).join("\n").trim()
     : ""
+
+const timestampToIso = (value: unknown) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined
+  }
+
+  try {
+    return new Date(value).toISOString()
+  } catch {
+    return undefined
+  }
+}
+
+const upsertAssistantMessagePart = (
+  state: Map<string, { sessionID: string; parts: Map<string, string> }>,
+  payload: unknown,
+) => {
+  if (!isRecord(payload) || !isRecord(payload.event) || payload.event.type !== "message.part.updated") {
+    return
+  }
+
+  const properties = isRecord(payload.event.properties) ? payload.event.properties : null
+  const part = properties && isRecord(properties.part) ? properties.part : null
+  if (!part || part.type !== "text") {
+    return
+  }
+
+  const messageID = typeof part.messageID === "string" ? part.messageID : ""
+  const sessionID = typeof part.sessionID === "string" ? part.sessionID : ""
+  const partID = typeof part.id === "string" ? part.id : ""
+  if (!messageID || !sessionID || !partID) {
+    return
+  }
+
+  const visibleText = readVisibleTextPart(part)
+  const existing = state.get(messageID) ?? { sessionID, parts: new Map<string, string>() }
+  existing.sessionID = sessionID
+  if (visibleText) {
+    existing.parts.set(partID, visibleText)
+  } else {
+    existing.parts.delete(partID)
+  }
+
+  if (existing.parts.size > 0) {
+    state.set(messageID, existing)
+  } else {
+    state.delete(messageID)
+  }
+}
+
+const extractCompletedAssistantMessage = (
+  payload: unknown,
+  state: Map<string, { sessionID: string; parts: Map<string, string> }>,
+) => {
+  if (!isRecord(payload) || !isRecord(payload.event) || payload.event.type !== "message.updated") {
+    return null
+  }
+
+  const properties = isRecord(payload.event.properties) ? payload.event.properties : null
+  const info = properties && isRecord(properties.info) ? properties.info : null
+  if (!info || info.role !== "assistant" || info.summary === true) {
+    return null
+  }
+
+  const messageId = typeof info.id === "string" ? info.id : ""
+  const sessionID = typeof info.sessionID === "string" ? info.sessionID : ""
+  const timing = isRecord(info.time) ? info.time : null
+  const createdAt = timestampToIso(timing?.completed ?? timing?.created)
+  const entry = messageId ? state.get(messageId) : null
+  const text = entry ? Array.from(entry.parts.values()).join("\n").trim() : ""
+  if (!messageId || !sessionID || !createdAt || !text || typeof timing?.completed !== "number") {
+    return null
+  }
+
+  return {
+    messageId,
+    sessionID,
+    text,
+    createdAt,
+  }
+}
 
 const fingerprint = (value: string) => normalizeId(value.trim().slice(0, 160))
 
@@ -326,12 +385,6 @@ const coerceNumber = (value: unknown) => {
 }
 
 const parseSettingValue = (fieldPath: string, raw: string): unknown => {
-  if (fieldPath === "linkedHosts") {
-    return raw
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean)
-  }
   if (fieldPath === "writeFrequency") {
     if (/^\d+$/.test(raw.trim())) {
       return Number(raw)
@@ -398,6 +451,9 @@ const applyRawLayer = (target: HonchoSettings, raw: Record<string, unknown>) => 
       }
       continue
     }
+    if (!TOP_LEVEL_SETTING_FIELDS.has(key)) {
+      continue
+    }
     if (value === undefined || value === null) {
       continue
     }
@@ -409,10 +465,6 @@ const applyRawLayer = (target: HonchoSettings, raw: Record<string, unknown>) => 
       ;(target as Record<string, unknown>)[key] = expanded
       continue
     }
-    if (key === "linkedHosts" && Array.isArray(value)) {
-      target.linkedHosts = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-      continue
-    }
     ;(target as Record<string, unknown>)[key] = value
   }
 }
@@ -421,14 +473,12 @@ const hostScopedSettings = (value: unknown): HostScopedSettings | null => {
   if (!isRecord(value)) {
     return null
   }
-  const linkedHosts = Array.isArray(value.linkedHosts)
-    ? value.linkedHosts.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    : []
-  return {
-    workspace: typeof value.workspace === "string" ? value.workspace : "",
-    aiPeer: typeof value.aiPeer === "string" ? value.aiPeer : "",
-    linkedHosts,
-  }
+  const normalized = normalizedRawSettings(value)
+  delete normalized[PERSISTED_API_KEY_FIELD]
+  delete normalized[LEGACY_API_KEY_FIELD]
+  delete normalized.peerName
+  delete normalized.linkedHosts
+  return normalized as HostScopedSettings
 }
 
 const normalizeScopedSettings = (raw: Record<string, unknown>, hostId = "opencode") => {
@@ -437,17 +487,17 @@ const normalizeScopedSettings = (raw: Record<string, unknown>, hostId = "opencod
   const topLevelWorkspace = typeof raw.workspace === "string" ? raw.workspace : ""
   const hostBlock = isRecord(raw.hosts) ? hostScopedSettings(raw.hosts[hostId]) : null
 
-  if (globalOverride && topLevelWorkspace.trim()) {
-    normalized.workspace = topLevelWorkspace
-  } else if (hostBlock?.workspace.trim()) {
-    normalized.workspace = hostBlock.workspace
+  if (hostBlock) {
+    for (const [key, value] of Object.entries(hostBlock)) {
+      if (value === undefined || value === null) {
+        continue
+      }
+      normalized[key] = value
+    }
   }
 
-  if (hostBlock?.aiPeer.trim()) {
-    normalized.aiPeer = hostBlock.aiPeer
-  }
-  if (hostBlock && hostBlock.linkedHosts.length > 0) {
-    normalized.linkedHosts = hostBlock.linkedHosts
+  if (globalOverride && topLevelWorkspace.trim()) {
+    normalized.workspace = topLevelWorkspace
   }
   return normalized
 }
@@ -585,13 +635,23 @@ const lookupField = (payload: Record<string, unknown>, field: string) =>
   }, payload)
 
 const extractSessionId = (input: Record<string, unknown> | undefined) => {
+  const event = isRecord(input?.event) ? input.event : undefined
   const eventProperties = isRecord(input?.event) && isRecord(input.event.properties) ? input.event.properties : undefined
+  const eventInfo = isRecord(eventProperties?.info) ? eventProperties.info : undefined
+  const eventPart = isRecord(eventProperties?.part) ? eventProperties.part : undefined
   const value =
     input?.sessionID ??
     input?.sessionId ??
     input?.session_id ??
+    event?.sessionID ??
+    event?.sessionId ??
+    event?.session_id ??
     eventProperties?.sessionID ??
-    eventProperties?.sessionId
+    eventProperties?.sessionId ??
+    eventInfo?.sessionID ??
+    eventInfo?.sessionId ??
+    eventPart?.sessionID ??
+    eventPart?.sessionId
   return typeof value === "string" && value.length > 0 ? value : "unknown-session"
 }
 
@@ -626,24 +686,32 @@ const deriveProjectRoot = (
 const configFileForRoot = (rootDir: string, configPathOverride?: string) =>
   configPathOverride ? path.resolve(configPathOverride) : path.join(rootDir, SETTINGS_DIR_NAME, SETTINGS_FILE_NAME)
 
-const globalSettingsPath = () => {
+const userHomeDir = () => process.env.HOME || process.env.USERPROFILE || process.cwd()
+
+const sharedGlobalSettingsPath = () => {
+  return path.join(userHomeDir(), SHARED_SETTINGS_DIR_NAME, SHARED_SETTINGS_FILE_NAME)
+}
+
+const legacyGlobalSettingsPath = () => {
   const configRoot =
     process.env.XDG_CONFIG_HOME && process.env.XDG_CONFIG_HOME.trim()
       ? path.resolve(process.env.XDG_CONFIG_HOME)
-      : path.join(process.env.HOME || process.env.USERPROFILE || process.cwd(), ".config")
-  return path.join(configRoot, GLOBAL_SETTINGS_DIR_NAME, GLOBAL_SETTINGS_FILE_PATH)
+      : path.join(userHomeDir(), ".config")
+  return path.join(configRoot, LEGACY_GLOBAL_SETTINGS_DIR_NAME, LEGACY_GLOBAL_SETTINGS_FILE_NAME)
 }
 
-const readConfigFile = async (configPath: string) => {
+const readJsonFile = async (configPath: string) => {
   try {
-    return normalizedRawSettings(JSON.parse(await readFile(configPath, "utf-8")) as Record<string, unknown>)
+    return JSON.parse(await readFile(configPath, "utf-8")) as Record<string, unknown>
   } catch (error) {
     if (isRecord(error) && error.code === "ENOENT") {
-      return {}
+      return null
     }
     throw error
   }
 }
+
+const readConfigFile = async (configPath: string) => normalizedRawSettings((await readJsonFile(configPath)) ?? {})
 
 const envSettings = (): Record<string, unknown> => ({
   apiKey: process.env.HONCHO_API_KEY || "",
@@ -655,8 +723,7 @@ const envSettings = (): Record<string, unknown> => ({
 
 const resolveSettings = async (rootDir: string, configPathOverride?: string) => {
   const configPath = configFileForRoot(rootDir, configPathOverride)
-  const globalConfigPath = globalSettingsPath()
-  const [globalRaw, projectRaw] = await Promise.all([readConfigFile(globalConfigPath), readConfigFile(configPath)])
+  const [{ globalConfigPath, globalRaw }, projectRaw] = await Promise.all([ensureSharedGlobalSettings(), readConfigFile(configPath)])
   return {
     configPath,
     globalConfigPath,
@@ -673,6 +740,91 @@ const writeSettings = async (
 }
 
 const currentUserName = () => process.env.USER || process.env.LOGNAME || "user"
+
+const rootApiKey = (raw: Record<string, unknown>) => {
+  const persistedApiKey = typeof raw[PERSISTED_API_KEY_FIELD] === "string" ? expandEnv(raw[PERSISTED_API_KEY_FIELD] as string) : ""
+  const legacyApiKey = typeof raw[LEGACY_API_KEY_FIELD] === "string" ? expandEnv(raw[LEGACY_API_KEY_FIELD] as string) : ""
+  return persistedApiKey || legacyApiKey
+}
+
+const hostDefaults = (settings: HonchoSettings): Record<string, unknown> => {
+  const workspace = typeof settings.workspace === "string" && settings.workspace.trim() ? settings.workspace : "opencode"
+  const aiPeer = typeof settings.aiPeer === "string" && settings.aiPeer.trim() ? settings.aiPeer : "opencode"
+  const host: Record<string, unknown> = {
+    enabled: settings.enabled,
+    baseUrl: settings.baseUrl,
+    aiPeer,
+    workspace,
+    globalOverride: settings.globalOverride,
+    recallMode: settings.recallMode,
+    observation: settings.observation,
+    peerModel: settings.peerModel,
+    writeFrequency: settings.writeFrequency,
+    sessionStrategy: settings.sessionStrategy,
+    dialecticReasoningLevel: settings.dialecticReasoningLevel,
+    dialecticDynamic: settings.dialecticDynamic,
+    dialecticMaxChars: settings.dialecticMaxChars,
+    messageMaxChars: settings.messageMaxChars,
+    saveMessages: settings.saveMessages,
+  }
+  const refresh = settings.contextRefresh
+  const hasCustomRefresh =
+    refresh.messageThreshold !== DEFAULT_SETTINGS.contextRefresh.messageThreshold ||
+    refresh.ttlSeconds !== DEFAULT_SETTINGS.contextRefresh.ttlSeconds ||
+    refresh.skipTrivialPrompts !== DEFAULT_SETTINGS.contextRefresh.skipTrivialPrompts ||
+    refresh.useSessionStartDialectic !== DEFAULT_SETTINGS.contextRefresh.useSessionStartDialectic
+  if (hasCustomRefresh) {
+    host.contextRefresh = refresh
+  }
+  return host
+}
+
+const writeSharedGlobalSettings = async (configPath: string, settings: Record<string, unknown>) => {
+  const next = { ...settings }
+  const apiKey = rootApiKey(next)
+  if (apiKey) {
+    next[LEGACY_API_KEY_FIELD] = apiKey
+  } else {
+    delete next[LEGACY_API_KEY_FIELD]
+  }
+  delete next[PERSISTED_API_KEY_FIELD]
+  await mkdir(path.dirname(configPath), { recursive: true })
+  await writeFile(configPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8")
+}
+
+const ensureSharedGlobalSettings = async () => {
+  const globalConfigPath = sharedGlobalSettingsPath()
+  const legacyConfigPath = legacyGlobalSettingsPath()
+  const [sharedRaw, legacyRaw] = await Promise.all([readJsonFile(globalConfigPath), readJsonFile(legacyConfigPath)])
+  const currentShared = sharedRaw ?? {}
+  const currentLegacy = legacyRaw ?? {}
+  const sharedResolved = normalizeScopedSettings(currentShared)
+  const legacyResolved = normalizeScopedSettings(currentLegacy)
+  const mergedHostSettings = mergeSettings(sharedResolved, legacyResolved)
+  const next: Record<string, unknown> = { ...currentShared }
+  const nextHosts = isRecord(next.hosts) ? { ...next.hosts } : {}
+  const existingPeerName = typeof next.peerName === "string" ? next.peerName.trim() : ""
+  const existingApiKey = rootApiKey(currentShared)
+  const legacyApiKey = rootApiKey(currentLegacy)
+
+  next.peerName = existingPeerName || currentUserName()
+  if (existingApiKey || legacyApiKey) {
+    next[LEGACY_API_KEY_FIELD] = existingApiKey || legacyApiKey
+  } else {
+    delete next[LEGACY_API_KEY_FIELD]
+  }
+  nextHosts.opencode = hostDefaults(mergedHostSettings)
+  next.hosts = nextHosts
+
+  if (JSON.stringify(currentShared, null, 2) !== JSON.stringify(next, null, 2)) {
+    await writeSharedGlobalSettings(globalConfigPath, next)
+  }
+
+  return {
+    globalConfigPath,
+    globalRaw: normalizedRawSettings(next),
+  }
+}
 
 const deriveAgentLabel = (input: Record<string, unknown> | undefined, pluginInput: PluginInput) => {
   const candidates = [
@@ -892,7 +1044,6 @@ const createActiveRuntime = async (
   configPathOverride?: string,
 ): Promise<ActiveRuntime> => {
   const handle = await deriveRuntimeHandle(pluginInput, input, configPathOverride)
-  const Honcho = await loadHonchoCtor()
   const honcho = new Honcho({
     apiKey: handle.config.apiKey || undefined,
     baseURL: handle.config.baseUrl || undefined,
@@ -964,10 +1115,27 @@ const createSessionState = (): SessionState => ({
   lastInjectedContext: null,
   recentConclusions: [],
   conclusionFingerprints: new Set<string>(),
+  capturedAssistantMessageIds: new Set<string>(),
+  assistantMessageParts: new Map<string, { sessionID: string; parts: Map<string, string> }>(),
   promptCount: 0,
   lastPromptRefreshAt: null,
   lastTopicKey: null,
 })
+
+const markAssistantMessageCaptured = async (
+  state: SessionState,
+  update: { messageId: string } | null,
+  persist: () => Promise<void>,
+) => {
+  if (!update || state.capturedAssistantMessageIds.has(update.messageId)) {
+    return false
+  }
+
+  await persist()
+  state.capturedAssistantMessageIds.add(update.messageId)
+  state.assistantMessageParts.delete(update.messageId)
+  return true
+}
 
 type SearchToolResult =
   | {
@@ -1066,11 +1234,15 @@ export const createHonchoRuntimePlugin =
       try {
         return await action(await createActiveRuntime(pluginInput, input, configPath))
       } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
         await log("error", "Honcho runtime operation failed.", {
-          message: error instanceof Error ? error.message : String(error),
+          message: detail,
           sessionId: handle.sessionId,
           workspaceId: handle.workspaceId,
         })
+        if (isRecord(fallback) && typeof fallback.error === "string") {
+          return { ...fallback, error: detail } as T
+        }
         return fallback
       }
     }
@@ -1092,7 +1264,6 @@ export const createHonchoRuntimePlugin =
         observation: handle.config.observation,
         sessionStrategy: handle.config.sessionStrategy,
         globalOverride: handle.config.globalOverride,
-        linkedHosts: handle.config.linkedHosts,
         saveMessages: handle.config.saveMessages,
         contextRefresh: handle.config.contextRefresh,
         peerModel: handle.config.peerModel,
@@ -1112,11 +1283,37 @@ export const createHonchoRuntimePlugin =
       peer: ActiveRuntime["userPeer"] | ActiveRuntime["agentPeer"],
       content: string,
       metadata: Record<string, unknown>,
+      createdAt?: string,
     ) => {
       if (!runtime.config.saveMessages) return
       const trimmed = clampText(content.trim(), runtime.config.messageMaxChars)
       if (!trimmed) return
-      await runtime.session.addMessages(peer.message(trimmed, { metadata }))
+      await runtime.session.addMessages(peer.message(trimmed, { metadata, createdAt }))
+    }
+
+    const captureCompletedAssistantRecord = async (
+      runtime: ActiveRuntime,
+      state: SessionState,
+      payload: unknown,
+      source: string,
+    ) => {
+      const update = extractCompletedAssistantMessage(payload, state.assistantMessageParts)
+      if (!update) {
+        return false
+      }
+      return markAssistantMessageCaptured(state, update, async () => {
+        await captureMessage(
+          runtime,
+          runtime.agentPeer,
+          update.text,
+          {
+            source,
+            sessionId: runtime.sessionId,
+            messageId: update.messageId,
+          },
+          update.createdAt,
+        )
+      })
     }
 
     const hydrateSessionStartContext = async (runtime: ActiveRuntime, state: SessionState) => {
@@ -1265,8 +1462,20 @@ export const createHonchoRuntimePlugin =
           }, undefined)
           return
         }
+        if (event.type === "message.part.updated") {
+          const state = getState(sessionId)
+          upsertAssistantMessagePart(state.assistantMessageParts, payload)
+          return
+        }
+        if (event.type === "message.updated") {
+          await withRuntime(payload, async (runtime) => {
+            const state = getState(runtime.sessionId)
+            await captureCompletedAssistantRecord(runtime, state, payload, `event.${event.type}`)
+          }, undefined)
+          return
+        }
         if (event.type === "session.idle" || event.type === "session.compacted") {
-          await withRuntime(payload, async () => {
+          await withRuntime(payload, async (runtime) => {
             await log("info", "Honcho lifecycle boundary observed.", {
               event: event.type,
               ...(await runtimeStatus(payload)),
@@ -1301,7 +1510,7 @@ export const createHonchoRuntimePlugin =
           await captureMessage(runtime, runtime.userPeer, message, {
             source: "chat.message",
             sessionId: runtime.sessionId,
-          })
+          }, timestampToIso(output.message?.time?.created))
           if (runtime.config.writeFrequency === "async" || runtime.config.writeFrequency === "turn") {
             const candidate = durableConclusionCandidate(message, runtime.config)
             if (candidate) {
@@ -1342,6 +1551,9 @@ export const createHonchoRuntimePlugin =
           )
         }, undefined)
       },
+      "experimental.chat.messages.transform": async (_input, output) => {
+        void output
+      },
       "experimental.session.compacting": async (input, output) => {
         const handle = await deriveRuntimeHandle(pluginInput, input, configPath)
         const state = getState(handle.sessionId)
@@ -1372,24 +1584,8 @@ export const createHonchoRuntimePlugin =
       "tool.execute.before": async (_input, output) => {
         output.args = output.args
       },
-      "tool.execute.after": async (input, output) => {
-        await withRuntime(input, async (runtime) => {
-          const toolName = typeof input.tool === "string" ? input.tool : "unknown-tool"
-          const resultText = typeof output.output === "string" ? output.output : ""
-          if (!resultText.trim()) {
-            return
-          }
-          await captureMessage(runtime, runtime.agentPeer, `${toolName} result: ${clampText(resultText.trim(), 1200)}`, {
-            source: "tool.execute.after",
-            tool: toolName,
-          })
-          if (runtime.config.writeFrequency === "async" && toolName.startsWith("honcho_")) {
-            const candidate = durableConclusionCandidate(resultText, runtime.config)
-            if (candidate) {
-              await maybeWriteConclusion(runtime, candidate, "tool.execute.after")
-            }
-          }
-        }, undefined)
+      "tool.execute.after": async () => {
+        return
       },
       tool: {
         honcho_get_config: tool({
@@ -1405,26 +1601,21 @@ export const createHonchoRuntimePlugin =
         }),
         honcho_setup: tool({
           description:
-            "Validate Honcho setup for OpenCode and persist shared Honcho credentials or a localhost baseUrl to ~/.config/opencode/honcho.json for all future projects when provided.",
+            "Validate Honcho setup for OpenCode and persist shared Honcho credentials or a localhost baseUrl to ~/.honcho/config.json under hosts.opencode for all future projects when provided.",
           args: {
             apiKey: tool.schema.string().optional(),
             baseUrl: tool.schema.string().optional(),
             persistGlobal: tool.schema.boolean().optional(),
           },
           async execute(args, context) {
-            let resolvedGlobalConfigPath = globalSettingsPath()
+            let resolvedGlobalConfigPath = sharedGlobalSettingsPath()
             try {
               const handle = await deriveRuntimeHandle(pluginInput, { sessionID: context.sessionID }, configPath)
               resolvedGlobalConfigPath = handle.globalConfigPath
               const shouldPersistGlobal = args.persistGlobal !== false
-              const globalPersisted = await readConfigFile(handle.globalConfigPath)
+              const globalPersisted = (await readJsonFile(handle.globalConfigPath)) ?? {}
               const nextGlobal = { ...globalPersisted }
               const nextHosts = isRecord(nextGlobal.hosts) ? { ...nextGlobal.hosts } : {}
-              const nextHostEntry = hostScopedSettings(nextHosts.opencode) ?? {
-                workspace: "opencode",
-                aiPeer: "opencode",
-                linkedHosts: [],
-              }
               const providedApiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : ""
               const providedBaseUrl = typeof args.baseUrl === "string" ? args.baseUrl.trim() : ""
               const effectiveApiKey = providedApiKey || handle.config.apiKey || ""
@@ -1433,22 +1624,29 @@ export const createHonchoRuntimePlugin =
               const persistedFields: string[] = []
 
               if (shouldPersistGlobal) {
-                nextGlobal.globalOverride = nextGlobal.globalOverride === true
                 if (effectiveApiKey) {
-                  setSettingValue(nextGlobal, "apiKey", effectiveApiKey)
-                  persistedFields.push(PERSISTED_API_KEY_FIELD)
+                  nextGlobal[LEGACY_API_KEY_FIELD] = effectiveApiKey
+                  persistedFields.push(LEGACY_API_KEY_FIELD)
                 }
-                if (effectiveBaseUrl && (providedBaseUrl || providedApiKey)) {
-                  setSettingValue(nextGlobal, "baseUrl", effectiveBaseUrl)
-                  persistedFields.push("baseUrl")
+                const nextPeerName = typeof nextGlobal.peerName === "string" && nextGlobal.peerName.trim()
+                  ? nextGlobal.peerName.trim()
+                  : currentUserName()
+                nextGlobal.peerName = nextPeerName
+                if (!persistedFields.includes("peerName")) {
+                  persistedFields.push("peerName")
                 }
-                nextHosts.opencode = nextHostEntry
+                const nextResolved = mergeSettings(
+                  normalizeScopedSettings(globalPersisted),
+                  {
+                    baseUrl: effectiveBaseUrl,
+                  },
+                )
+                nextHosts.opencode = hostDefaults(nextResolved)
                 nextGlobal.hosts = nextHosts
-                if (persistedFields.length > 0) {
-                  await writeSettings(handle.globalConfigPath, nextGlobal)
-                } else if (!isRecord(globalPersisted.hosts) || !isRecord(globalPersisted.hosts.opencode)) {
-                  await writeSettings(handle.globalConfigPath, nextGlobal)
+                if (providedBaseUrl || providedApiKey) {
+                  persistedFields.push("hosts.opencode.baseUrl")
                 }
+                await writeSharedGlobalSettings(handle.globalConfigPath, nextGlobal)
               }
 
               const configured = Boolean(effectiveApiKey) || isLocalBaseUrl(effectiveBaseUrl)
@@ -1589,24 +1787,55 @@ export const createHonchoRuntimePlugin =
           description: "Create a durable Honcho memory for this OpenCode project using the current peer and session mapping.",
           args: { content: tool.schema.string() },
           async execute(args, context) {
-            return JSON.stringify(
-              await withRuntime<ConclusionToolResult>(
-                { ...args, sessionID: context.sessionID },
-                async (runtime) => {
-                  const content = clampText(args.content.trim(), runtime.config.dialecticMaxChars)
-                  const created = await maybeWriteConclusion(runtime, content, "tool.create_conclusion")
-                  return {
-                    ok: created,
-                    workspace: runtime.workspaceId,
-                    sessionKey: runtime.sessionKey,
-                    content,
-                  }
+            const handle = await deriveRuntimeHandle(pluginInput, { ...args, sessionID: context.sessionID }, configPath)
+            if (!handle.config.enabled) {
+              return JSON.stringify({ ok: false, error: "Honcho is disabled." }, null, 2)
+            }
+            if (!hasConfiguredAuth(handle.config)) {
+              return JSON.stringify(
+                {
+                  ok: false,
+                  error: "Honcho is not configured with an API key or localhost baseUrl.",
+                  workspace: handle.workspaceId,
+                  sessionKey: handle.sessionKey,
                 },
-                { ok: false, error: "Honcho is unavailable for durable writes." },
-              ),
-              null,
-              2,
-            )
+                null,
+                2,
+              )
+            }
+
+            try {
+              const runtime = await createActiveRuntime(pluginInput, { ...args, sessionID: context.sessionID }, configPath)
+              const content = clampText(args.content.trim(), runtime.config.dialecticMaxChars)
+              const created = await maybeWriteConclusion(runtime, content, "tool.create_conclusion")
+              return JSON.stringify(
+                {
+                  ok: created,
+                  workspace: runtime.workspaceId,
+                  sessionKey: runtime.sessionKey,
+                  content,
+                },
+                null,
+                2,
+              )
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error)
+              await log("error", "Honcho durable write failed.", {
+                message: detail,
+                sessionId: handle.sessionId,
+                workspaceId: handle.workspaceId,
+              })
+              return JSON.stringify(
+                {
+                  ok: false,
+                  error: detail,
+                  workspace: handle.workspaceId,
+                  sessionKey: handle.sessionKey,
+                },
+                null,
+                2,
+              )
+            }
           },
         }),
       },
@@ -1615,13 +1844,18 @@ export const createHonchoRuntimePlugin =
 
 export const HonchoRuntimePlugin = createHonchoRuntimePlugin()
 export const __testing = {
-  honchoSdkImportPath: HONCHO_SDK_IMPORT_PATH,
+  createSessionState,
+  extractCompletedAssistantMessage,
+  honchoSdkImportPath: "@honcho-ai/sdk",
   buildPeerTopology,
   defaultSettings: DEFAULT_SETTINGS,
   deriveSessionScope,
+  markAssistantMessageCaptured,
+  timestampToIso,
+  upsertAssistantMessagePart,
+  extractSessionId,
   installGlobalConfig,
   normalizeId,
-  resolveHonchoCtor,
   sessionPeerAdditions,
   scaffoldTemplates,
 }
