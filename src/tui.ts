@@ -11,23 +11,14 @@ const SHARED_SETTINGS_FILE_NAME = "config.json"
 type GlobalSettings = {
   apiKey?: string
   peerName?: string
+  baseUrl?: string
   hosts?: {
     opencode?: {
-      enabled?: boolean
-      baseUrl?: string
       workspace?: string
       aiPeer?: string
-      globalOverride?: boolean
       recallMode?: "hybrid" | "context" | "tools"
-      observation?: "directional" | "unified"
-      peerModel?: "classic" | "hierarchical"
-      writeFrequency?: "async" | "turn" | "session" | number
+      observationMode?: "directional" | "unified"
       sessionStrategy?: "per-repo" | "per-directory" | "per-session" | "global" | "git-branch" | "chat-instance"
-      dialecticReasoningLevel?: "minimal" | "low" | "medium" | "high" | "max"
-      dialecticDynamic?: boolean
-      dialecticMaxChars?: number
-      messageMaxChars?: number
-      saveMessages?: boolean
     }
   }
 }
@@ -70,8 +61,8 @@ const writeGlobalSettings = async (settings: GlobalSettings) => {
 
 const normalizeSettings = (settings: GlobalSettings) => ({
   baseUrl:
-    typeof settings.hosts?.opencode?.baseUrl === "string" && settings.hosts.opencode.baseUrl.trim()
-      ? settings.hosts.opencode.baseUrl
+    typeof settings.baseUrl === "string" && settings.baseUrl.trim()
+      ? settings.baseUrl
       : DEFAULT_BASE_URL,
   apiKey:
     typeof settings.apiKey === "string" && settings.apiKey.trim() ? settings.apiKey.trim() : "",
@@ -101,39 +92,36 @@ const statusMessage = (settings: GlobalSettings) => {
 
 const saveSettings = async (partial: Partial<GlobalSettings>) => {
   const current = await readGlobalSettings()
+  const partialHost = partial.hosts?.opencode
   const nextApiKey =
     typeof partial.apiKey === "string"
       ? partial.apiKey
       : typeof current.apiKey === "string"
         ? current.apiKey
         : undefined
-  const next: GlobalSettings = {
-    ...current,
-    ...partial,
-    peerName:
-      typeof current.peerName === "string" && current.peerName.trim()
+  const nextPeerName =
+    typeof partial.peerName === "string" && partial.peerName.trim()
+      ? partial.peerName.trim()
+      : typeof current.peerName === "string" && current.peerName.trim()
         ? current.peerName.trim()
-        : process.env.HONCHO_PEER_NAME || process.env.USER || process.env.USERNAME || "user",
+        : "user"
+  const next: GlobalSettings = {
+    baseUrl:
+      typeof partial.baseUrl === "string"
+        ? partial.baseUrl
+        : typeof current.baseUrl === "string"
+          ? current.baseUrl
+          : DEFAULT_BASE_URL,
+    peerName: nextPeerName,
     apiKey: nextApiKey,
     hosts: {
       ...current.hosts,
       opencode: {
-        enabled: current.hosts?.opencode?.enabled ?? true,
-        baseUrl: current.hosts?.opencode?.baseUrl || DEFAULT_BASE_URL,
-        workspace: current.hosts?.opencode?.workspace || "opencode",
-        aiPeer: current.hosts?.opencode?.aiPeer || "opencode",
-        globalOverride: current.hosts?.opencode?.globalOverride ?? false,
-        recallMode: current.hosts?.opencode?.recallMode || "hybrid",
-        observation: current.hosts?.opencode?.observation || "directional",
-        peerModel: current.hosts?.opencode?.peerModel || "classic",
-        writeFrequency: current.hosts?.opencode?.writeFrequency || "async",
-        sessionStrategy: current.hosts?.opencode?.sessionStrategy || "per-directory",
-        dialecticReasoningLevel: current.hosts?.opencode?.dialecticReasoningLevel || "low",
-        dialecticDynamic: current.hosts?.opencode?.dialecticDynamic ?? true,
-        dialecticMaxChars: current.hosts?.opencode?.dialecticMaxChars || 600,
-        messageMaxChars: current.hosts?.opencode?.messageMaxChars || 25000,
-        saveMessages: current.hosts?.opencode?.saveMessages ?? true,
-        ...partial.hosts?.opencode,
+        workspace: partialHost?.workspace ?? current.hosts?.opencode?.workspace ?? "opencode",
+        aiPeer: partialHost?.aiPeer ?? current.hosts?.opencode?.aiPeer ?? "opencode",
+        recallMode: partialHost?.recallMode ?? current.hosts?.opencode?.recallMode ?? "hybrid",
+        observationMode: partialHost?.observationMode ?? current.hosts?.opencode?.observationMode ?? "directional",
+        sessionStrategy: partialHost?.sessionStrategy ?? current.hosts?.opencode?.sessionStrategy ?? "per-directory",
       },
     },
   }
@@ -158,11 +146,7 @@ const openLocalApiKeyPrompt = (api: Parameters<TuiPlugin>[0], baseUrl: string) =
       onConfirm: async (apiKey) => {
         const configPath = await saveSettings({
           apiKey: apiKey.trim(),
-          hosts: {
-            opencode: {
-              baseUrl,
-            },
-          },
+          baseUrl,
         })
         api.ui.dialog.replace(() =>
           api.ui.DialogAlert({
@@ -210,11 +194,7 @@ const openCloudApiKeyPrompt = (api: Parameters<TuiPlugin>[0]) => {
         }
         const configPath = await saveSettings({
           apiKey: apiKey.trim(),
-          hosts: {
-            opencode: {
-              baseUrl: DEFAULT_BASE_URL,
-            },
-          },
+          baseUrl: DEFAULT_BASE_URL,
         })
         api.ui.dialog.replace(() =>
           api.ui.DialogAlert({
@@ -306,6 +286,7 @@ const plugin: TuiPluginModule & { id: string } = {
 
 export const __testing = {
   normalizeSettings,
+  saveSettings,
   statusMessage,
   validateCloudApiKey,
 }
