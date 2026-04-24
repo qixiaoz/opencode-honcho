@@ -14,6 +14,17 @@ Give OpenCode long-term memory that survives context wipes, session restarts, an
 
 ### Step 2: Install the Plugin
 
+<details>
+<summary>Windows local install</summary>
+
+```bat
+git clone --branch main https://github.com/plastic-labs/opencode-honcho.git
+cd opencode-honcho
+bun install && bun run build && bun .\dist\cli.js install --plugin-spec "%CD%" --force
+```
+
+</details>
+
 This package installs the Honcho plugin into OpenCode and writes the Honcho command templates into your global OpenCode config.
 
 ```bash
@@ -29,15 +40,8 @@ If the installer cannot find `opencode`, restart your shell or source your shell
 2. Run `/honcho:setup`
 3. Keep the default `Honcho Cloud` option unless you explicitly want a self-hosted or local endpoint
 4. Enter your Honcho API key
-5. Run `/honcho:status` to verify the runtime
-
-### Step 4: (Optional) Kickstart with an Interview
-
-```text
-/honcho:interview
-```
-
-This captures durable preferences or stable project context into Honcho memory.
+5. Enter your `peerName`
+6. Run `/honcho:status` to verify the runtime
 
 ## What You Get
 
@@ -47,7 +51,7 @@ This captures durable preferences or stable project context into Honcho memory.
 - **Session Mapping** - Sessions can be scoped per directory, repo, branch, chat instance, or globally
 - **Durable Writes** - Honcho can retain stable conclusions and session context
 - **Memory Retrieval** - Search memory, query Honcho knowledge, and inject relevant context into prompts
-- **Peer Modeling** - Supports the default classic peer model and optional hierarchical modeling for delegated agent flows
+- **Peer Modeling** - User and root-agent peers follow a fixed observation model tuned for OpenCode
 
 ## Installation Output
 
@@ -69,27 +73,13 @@ OpenCode reads and writes this shared config file directly. OpenCode-specific de
 ```jsonc
 {
   "apiKey": "hch-...",
-  "peerName": "user-name",
+  "peerName": "user",
   "baseUrl": "https://api.honcho.dev",
-  "workspace": "opencode",
-  "aiPeer": "opencode",
-  "globalOverride": false,
-  "recallMode": "hybrid",
-  "observation": "directional",
-  "peerModel": "classic",
-  "writeFrequency": "async",
-  "sessionStrategy": "per-directory",
   "hosts": {
     "opencode": {
-      "enabled": true,
-      "baseUrl": "https://api.honcho.dev",
       "workspace": "opencode",
       "aiPeer": "opencode",
-      "globalOverride": false,
       "recallMode": "hybrid",
-      "observation": "directional",
-      "peerModel": "classic",
-      "writeFrequency": "async",
       "sessionStrategy": "per-directory"
     }
   }
@@ -126,13 +116,9 @@ If OpenCode is running in Docker or another remote environment, `localhost` may 
 | Command | Description |
 | --- | --- |
 | `/honcho:setup` | First-time setup for cloud or local Honcho |
-| `/honcho:status` | Show effective Honcho status for the current OpenCode project |
+| `/honcho:status` | Show effective Honcho status for the current OpenCode project, including live workspace and session names when available |
 | `/honcho:settings` | Show effective config values and config paths |
-| `/honcho:set` | Persist a config field in `~/.honcho/config.json` |
-| `/honcho:unset` | Reset a shared config field back to its default |
-| `/honcho:mode` | Change `recallMode` |
-| `/honcho:write` | Change `writeFrequency` only. This does not create memory |
-| `/honcho:interview` | Capture durable memory or preferences into Honcho |
+| `/honcho:config` | Edit shared Honcho fields in `~/.honcho/config.json` |
 
 ## Agent Tools
 
@@ -144,7 +130,7 @@ The plugin exposes these tools inside OpenCode:
 | `honcho_status` | Show effective runtime status |
 | `honcho_get_config` | Read effective and persisted settings |
 | `honcho_set_config` | Update a persisted shared setting |
-| `honcho_search` | Search Honcho session memory |
+| `honcho_search` | Search Honcho session messages in the current session |
 | `honcho_chat` | Query Honcho for reasoning-backed context |
 | `honcho_create_conclusion` | Save a durable memory conclusion |
 
@@ -163,9 +149,13 @@ The plugin uses these OpenCode plugin capabilities:
 
 ## Development
 
+For macOS/Linux local branch testing:
+
 ```bash
 bun install
 bun run build
-bun test
-bun run check
+bun ./dist/cli.js install --plugin-spec "$PWD" --force
 ```
+
+That install command wires the current checkout into OpenCode with `--force`, which is the intended local branch-testing flow.
+

@@ -29,13 +29,13 @@ const runCli = async (args, env) => {
 test("source CLI uses the Bun shebang", async () => {
   const source = await readFile(path.join(process.cwd(), "src/cli.ts"), "utf-8")
 
-  expect(source.startsWith("#!/usr/bin/env bun\n")).toBe(true)
+  expect(source).toMatch(/^#!\/usr\/bin\/env bun\r?\n/)
 })
 
 test("built CLI uses the Bun shebang", async () => {
   const built = await readFile(path.join(process.cwd(), "dist/cli.js"), "utf-8")
 
-  expect(built.startsWith("#!/usr/bin/env bun\n")).toBe(true)
+  expect(built).toMatch(/^#!\/usr\/bin\/env bun\r?\n/)
 })
 
 test("install command explains how to recover when opencode is not on PATH", async () => {
@@ -52,6 +52,13 @@ test("install command explains how to recover when opencode is not on PATH", asy
   expect(result.stderr).toMatch(/opencode CLI was not found on PATH|restart your shell|source .*rc/i)
 })
 
+test("source CLI carries Windows-specific recovery guidance", async () => {
+  const source = await readFile(path.join(process.cwd(), "src/cli.ts"), "utf-8")
+
+  expect(source).toMatch(/installPathRecoveryMessageForWindows/)
+  expect(source).toMatch(/PowerShell|Command Prompt|refresh your PATH/i)
+})
+
 test("help output shows Bun-first install example", async () => {
   const result = await runCli(["--help"], process.env)
 
@@ -60,4 +67,12 @@ test("help output shows Bun-first install example", async () => {
   expect(result.stdout).toMatch(/opencode-honcho install/)
   expect(result.stdout).toMatch(/bunx @honcho-ai\/opencode-honcho install/)
   expect(result.stderr).toBe("")
+})
+
+test("install command uses cmd.exe wrapper on Windows", async () => {
+  const source = await readFile(path.join(process.cwd(), "src/cli.ts"), "utf-8")
+
+  expect(source).toMatch(/cmd\.exe/)
+  expect(source).toMatch(/\/c", "opencode"/)
+  expect(source).toMatch(/process\.platform === "win32"/)
 })

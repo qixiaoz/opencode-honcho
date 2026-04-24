@@ -104,16 +104,17 @@ test("honcho_setup writes shared Honcho config with root peerName and hosts.open
   const sharedConfigPath = path.join(sharedConfigDir, "config.json")
 
   await withMockFetch(successfulValidationFetch, async () => {
-    await withEnv({ HOME: homeDir, USER: "adavya", XDG_CONFIG_HOME: undefined }, async () => {
+    await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
       const hooks = await createPluginHarness(rootDir)
       const honchoSetup = hooks.tool.honcho_setup
-      const result = JSON.parse(await honchoSetup.execute({ apiKey: "new-key" }, toolContext(rootDir)))
+      const result = JSON.parse(await honchoSetup.execute({ apiKey: "new-key", peerName: "custom-peer" }, toolContext(rootDir)))
       const persisted = JSON.parse(await readFile(sharedConfigPath, "utf-8"))
 
       expect(result.ok).toBe(true)
       expect(result.globalConfigPath).toBe(sharedConfigPath)
       expect(result.status.baseUrl).toBe("https://api.honcho.dev")
-      expect(persisted.peerName).toBe("user")
+      expect(result.status.peerName).toBe("custom-peer")
+      expect(persisted.peerName).toBe("custom-peer")
       expect(persisted.apiKey).toBe("new-key")
       expect(persisted.honchoApiKey).toBeUndefined()
       expect(persisted.baseUrl).toBe("https://api.honcho.dev")
@@ -129,10 +130,10 @@ test("honcho_setup writes shared Honcho config with root peerName and hosts.open
         aiPeer: "opencode",
         workspace: "opencode",
         recallMode: "hybrid",
-        observationMode: "directional",
         sessionStrategy: "per-directory",
       })
       expect("linkedHosts" in persisted.hosts.opencode).toBe(false)
+      expect(result.persistedFields).toContain("peerName")
       expect(result.status.peers.userPeer.observe_me).toBe(true)
       expect(result.status.peers.userPeer.observe_others).toBe(false)
       expect(result.status.peers.userPeer.observeMe).toBeUndefined()
@@ -151,7 +152,7 @@ test("honcho_status reads effective settings from shared hosts.opencode config",
     sharedConfigPath,
     JSON.stringify(
       {
-        peerName: "adavya",
+        peerName: "user",
         apiKey: "status-key",
         baseUrl: "https://api.honcho.dev",
         hosts: {
@@ -169,7 +170,7 @@ test("honcho_status reads effective settings from shared hosts.opencode config",
 
   await withEnv({
     HOME: homeDir,
-    USER: "adavya",
+    USER: "ignored-user",
     XDG_CONFIG_HOME: undefined,
     HONCHO_API_KEY: undefined,
     HONCHO_URL: undefined,
@@ -189,6 +190,10 @@ test("honcho_status reads effective settings from shared hosts.opencode config",
     expect(result.projectConfigPath).toBe(sharedConfigPath)
     expect(result.globalConfigPath).toBe(sharedConfigPath)
     expect(result.workspace).toBe("opencode")
+    expect(result.workspaceName).toBe("opencode")
+    expect(typeof result.sessionName).toBe("string")
+    expect(result.sessionName).toContain("opencode")
+    expect(result.observationMode).toBeUndefined()
     expect(result.peers.userPeer.observe_me).toBe(true)
     expect(result.peers.rootAgentPeer.observe_others).toBe(true)
     expect(result.peers.rootAgentPeer.observeOthers).toBeUndefined()
@@ -209,7 +214,7 @@ test("honcho_status ignores a local .opencode/honcho.json and only reads ~/.honc
     sharedConfigPath,
     JSON.stringify(
       {
-        peerName: "adavya",
+        peerName: "user",
         apiKey: "shared-key",
         baseUrl: "https://api.honcho.dev",
         hosts: {
@@ -237,7 +242,7 @@ test("honcho_status ignores a local .opencode/honcho.json and only reads ~/.honc
 
   await withEnv({
     HOME: homeDir,
-    USER: "adavya",
+    USER: "ignored-user",
     XDG_CONFIG_HOME: undefined,
     HONCHO_API_KEY: undefined,
     HONCHO_URL: undefined,
@@ -269,7 +274,7 @@ test("honcho_status lets exported HONCHO_* values override ~/.honcho/config.json
     sharedConfigPath,
     JSON.stringify(
       {
-        peerName: "adavya",
+        peerName: "user",
         apiKey: "file-key",
         baseUrl: "https://api.honcho.dev",
         hosts: {
@@ -287,7 +292,7 @@ test("honcho_status lets exported HONCHO_* values override ~/.honcho/config.json
   await withEnv(
     {
       HOME: homeDir,
-      USER: "adavya",
+      USER: "ignored-user",
       XDG_CONFIG_HOME: undefined,
       HONCHO_API_KEY: "env-key",
       HONCHO_URL: undefined,
@@ -309,60 +314,43 @@ test("honcho_status lets exported HONCHO_* values override ~/.honcho/config.json
   )
 })
 
-test("honcho_status preserves existing shared global config and adds hosts.opencode defaults without clobbering other hosts", async () => {
+test("honcho_status preserves existing shared global config without mutating the file", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "honcho-existing-global-config-"))
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "honcho-home-existing-global-"))
   const sharedConfigDir = path.join(homeDir, ".honcho")
   const sharedConfigPath = path.join(sharedConfigDir, "config.json")
+  const initialConfig = {
+    apiKey: "existing-key",
+    peerName: "user",
+    globalOverride: true,
+    workspace: "legacy-workspace",
+    hosts: {
+      claude_code: {
+        workspace: "claude_code",
+        aiPeer: "claude",
+      },
+    },
+  }
 
   await mkdir(sharedConfigDir, { recursive: true })
   await writeFile(
     sharedConfigPath,
-    JSON.stringify(
-      {
-        apiKey: "existing-key",
-        peerName: "alice",
-        hosts: {
-          claude_code: {
-            workspace: "claude_code",
-            aiPeer: "claude",
-          },
-        },
-      },
-      null,
-      2,
-    ),
+    JSON.stringify(initialConfig, null, 2),
   )
 
-  await withEnv({ HOME: homeDir, USER: "adavya", XDG_CONFIG_HOME: undefined }, async () => {
+  await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
     const hooks = await createPluginHarness(rootDir)
     const status = JSON.parse(await hooks.tool.honcho_status.execute({}, toolContext(rootDir)))
     const persisted = JSON.parse(await readFile(sharedConfigPath, "utf-8"))
 
     expect(status.configPath).toBe(sharedConfigPath)
     expect(status.workspace).toBe("opencode")
-    expect(persisted.apiKey).toBe("existing-key")
-    expect(persisted.peerName).toBe("alice")
-    expect(persisted.baseUrl).toBe("https://api.honcho.dev")
-    expect(persisted.workspace).toBeUndefined()
-    expect(persisted.aiPeer).toBeUndefined()
-    expect(persisted.globalOverride).toBeUndefined()
-    expect(persisted.recallMode).toBeUndefined()
-    expect(persisted.observation).toBeUndefined()
-    expect(persisted.peerModel).toBeUndefined()
-    expect(persisted.writeFrequency).toBeUndefined()
-    expect(persisted.sessionStrategy).toBeUndefined()
+    expect(persisted).toEqual(initialConfig)
     expect(persisted.hosts.claude_code).toEqual({
       workspace: "claude_code",
       aiPeer: "claude",
     })
-    expect(persisted.hosts.opencode).toEqual({
-      aiPeer: "opencode",
-      workspace: "opencode",
-      recallMode: "hybrid",
-      observationMode: "directional",
-      sessionStrategy: "per-directory",
-    })
+    expect(persisted.hosts.opencode).toBeUndefined()
   })
 })
 
@@ -377,7 +365,7 @@ test("honcho_status uses root baseUrl together with host-scoped OpenCode default
     sharedConfigPath,
     JSON.stringify(
       {
-        peerName: "alice",
+        peerName: "user",
         apiKey: "status-key",
         baseUrl: "http://127.0.0.1:8000",
         hosts: {
@@ -394,7 +382,7 @@ test("honcho_status uses root baseUrl together with host-scoped OpenCode default
 
   await withEnv({
     HOME: homeDir,
-    USER: "adavya",
+    USER: "ignored-user",
     XDG_CONFIG_HOME: undefined,
     HONCHO_API_KEY: undefined,
     HONCHO_URL: undefined,
@@ -421,7 +409,7 @@ test("honcho_setup returns a structured error when the shared config path cannot
   await writeFile(invalidHonchoDir, "not a directory\n")
 
   await withMockFetch(successfulValidationFetch, async () => {
-    await withEnv({ HOME: homeDir, USER: "adavya", XDG_CONFIG_HOME: undefined }, async () => {
+    await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
       const hooks = await createPluginHarness(rootDir)
       const honchoSetup = hooks.tool.honcho_setup
       const result = JSON.parse(await honchoSetup.execute({ apiKey: "new-key" }, toolContext(rootDir)))
@@ -437,7 +425,7 @@ test("honcho_set_config rejects removed and deprecated config fields", async () 
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "honcho-reject-deprecated-field-"))
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "honcho-home-reject-deprecated-"))
 
-  await withEnv({ HOME: homeDir, USER: "adavya", XDG_CONFIG_HOME: undefined }, async () => {
+  await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
     const hooks = await createPluginHarness(rootDir)
 
     for (const field of [
@@ -461,6 +449,44 @@ test("honcho_set_config rejects removed and deprecated config fields", async () 
   })
 })
 
+test("honcho_set_config updates requested field without deleting unrelated top-level keys", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "honcho-preserve-top-level-"))
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "honcho-home-preserve-top-level-"))
+  const sharedConfigDir = path.join(homeDir, ".honcho")
+  const sharedConfigPath = path.join(sharedConfigDir, "config.json")
+
+  await mkdir(sharedConfigDir, { recursive: true })
+  await writeFile(
+    sharedConfigPath,
+    JSON.stringify(
+      {
+        apiKey: "existing-key",
+        peerName: "user",
+        globalOverride: true,
+        workspace: "legacy-workspace",
+      },
+      null,
+      2,
+    ),
+  )
+
+  await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
+    const hooks = await createPluginHarness(rootDir)
+    const result = JSON.parse(
+      await hooks.tool.honcho_set_config.execute(
+        { field: "recallMode", value: "tools" },
+        toolContext(rootDir),
+      ),
+    )
+    const persisted = JSON.parse(await readFile(sharedConfigPath, "utf-8"))
+
+    expect(result.ok).toBe(true)
+    expect(persisted.globalOverride).toBe(true)
+    expect(persisted.workspace).toBe("legacy-workspace")
+    expect(persisted.hosts.opencode?.recallMode).toBe("tools")
+  })
+})
+
 test("honcho_setup returns ok false and does not persist when cloud auth validation fails", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "honcho-setup-invalid-auth-"))
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "honcho-home-invalid-auth-"))
@@ -472,7 +498,7 @@ test("honcho_setup returns ok false and does not persist when cloud auth validat
         headers: { "content-type": "application/json" },
       }),
     async () => {
-      await withEnv({ HOME: homeDir, USER: "adavya", XDG_CONFIG_HOME: undefined }, async () => {
+      await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
         const hooks = await createPluginHarness(rootDir)
         const result = JSON.parse(await hooks.tool.honcho_setup.execute({ apiKey: "bad-key" }, toolContext(rootDir)))
         const persisted = JSON.parse(await readFile(sharedConfigPath, "utf-8"))
@@ -496,7 +522,7 @@ test("honcho_setup returns the explicit no-key response for default cloud setup 
   }, async () => {
     await withEnv({
       HOME: homeDir,
-      USER: "adavya",
+      USER: "ignored-user",
       XDG_CONFIG_HOME: undefined,
       HONCHO_API_KEY: undefined,
       HONCHO_URL: undefined,
@@ -516,7 +542,7 @@ test("honcho_status defaults workspace to opencode instead of the OpenCode proje
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "honcho-status-default-workspace-"))
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "honcho-home-default-workspace-"))
 
-  await withEnv({ HOME: homeDir, USER: "adavya", XDG_CONFIG_HOME: undefined }, async () => {
+  await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
     const plugin = createHonchoRuntimePlugin()
     const hooks = await plugin({
       client: { app: { log: async () => undefined } },
@@ -540,7 +566,7 @@ test("honcho_status uses the project worktree to derive per-directory session ke
 
   await mkdir(nestedDir, { recursive: true })
 
-  await withEnv({ HOME: homeDir, USER: "adavya", XDG_CONFIG_HOME: undefined }, async () => {
+  await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
     const plugin = createHonchoRuntimePlugin()
     const hooks = await plugin({
       client: { app: { log: async () => undefined } },
