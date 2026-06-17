@@ -26,9 +26,12 @@ type HonchoSettings = {
   workspace: string
   recallMode: RecallMode
   sessionStrategy: SessionStrategy
+  removeUserPrefix: boolean
 }
 
-type HostScopedSettings = Partial<Pick<HonchoSettings, "workspace" | "aiPeer" | "recallMode" | "sessionStrategy">>
+type HostScopedSettings = Partial<
+  Pick<HonchoSettings, "workspace" | "aiPeer" | "recallMode" | "sessionStrategy" | "removeUserPrefix">
+>
 
 type RuntimeHandle = {
   rootDir: string
@@ -108,6 +111,10 @@ const DEFAULT_SETTINGS: HonchoSettings = {
   workspace: "opencode",
   recallMode: "hybrid",
   sessionStrategy: "per-directory",
+  // Default false for everyone, including upgrading installs: an existing user
+  // keeps their `user-<peerName>` peer and its memory. New installs are stamped
+  // true at config creation, and anyone can opt in by setting it true.
+  removeUserPrefix: false,
 }
 
 const INTERNAL_DIALECTIC_REASONING_LEVEL: DialecticReasoningLevel = "low"
@@ -121,7 +128,7 @@ const INTERNAL_CONTEXT_REFRESH: ContextRefreshSettings = {
   useSessionStartDialectic: true,
 }
 
-const BOOLEAN_KEYS = new Set<keyof HonchoSettings>([])
+const BOOLEAN_KEYS = new Set<keyof HonchoSettings>(["removeUserPrefix"])
 
 const NUMBER_KEYS = new Set<keyof HonchoSettings>([])
 
@@ -133,7 +140,13 @@ const ENUM_KEYS: Record<string, ReadonlySet<string>> = {
 const INHERITABLE_STRING_KEYS = new Set<keyof HonchoSettings>(["apiKey", "baseUrl", "peerName", "aiPeer", "workspace"])
 
 const TOP_LEVEL_SETTING_FIELDS = new Set<keyof HonchoSettings>(["apiKey", "baseUrl", "peerName"])
-const HOST_SETTING_FIELDS = new Set<keyof HonchoSettings>(["workspace", "aiPeer", "recallMode", "sessionStrategy"])
+const HOST_SETTING_FIELDS = new Set<keyof HonchoSettings>([
+  "workspace",
+  "aiPeer",
+  "recallMode",
+  "sessionStrategy",
+  "removeUserPrefix",
+])
 
 const SETTING_FIELD_PATHS = new Set([
   "apiKey",
@@ -143,6 +156,7 @@ const SETTING_FIELD_PATHS = new Set([
   "workspace",
   "recallMode",
   "sessionStrategy",
+  "removeUserPrefix",
 ])
 
 const DURABLE_PATTERNS = [
@@ -353,6 +367,14 @@ const applyRawLayer = (target: HonchoSettings, raw: Record<string, unknown>) => 
       continue
     }
     if (value === undefined || value === null) {
+      continue
+    }
+    if (BOOLEAN_KEYS.has(key)) {
+      // Coerce booleans at the read boundary: a config (or hand-edit, which the
+      // README invites) may carry the string "true"/"false". Only true/"true" is
+      // true, so a stray "false" can't be truthy and silently flip the prefix.
+      ;(target as Record<string, unknown>)[key] =
+        value === true || (typeof value === "string" && value.trim().toLowerCase() === "true")
       continue
     }
     if (typeof value === "string") {
@@ -616,6 +638,22 @@ const writeSettings = async (
 
 const currentUserName = () => "user"
 
+const deriveUserPeerId = (settings: Pick<HonchoSettings, "peerName" | "removeUserPrefix">) => {
+  const name = settings.peerName || currentUserName()
+  // removeUserPrefix=true drops the `user-` prefix to match the sibling
+  // claude-honcho / hermes-honcho plugins; false (the legacy-safe default)
+  // keeps the historical `user-<name>` peer and its accumulated memory.
+  return settings.removeUserPrefix ? normalizeId(name) : normalizeId(`user:${name}`)
+}
+
+const assertDistinctUserAndAgentPeers = (userPeerId: string, rootAgentPeerId: string) => {
+  if (userPeerId === rootAgentPeerId) {
+    throw new Error(
+      `Invalid Honcho config: peerName and aiPeer both resolve to the peer id '${userPeerId}'; they must differ so user and agent memory stay separate.`,
+    )
+  }
+}
+
 const rootApiKey = (raw: Record<string, unknown>) => {
   const legacyApiKey = typeof raw[LEGACY_API_KEY_FIELD] === "string" ? expandEnv(raw[LEGACY_API_KEY_FIELD] as string) : ""
   return legacyApiKey
@@ -629,6 +667,7 @@ const hostDefaults = (settings: HonchoSettings): Record<string, unknown> => {
     aiPeer,
     recallMode: settings.recallMode,
     sessionStrategy: settings.sessionStrategy,
+    removeUserPrefix: settings.removeUserPrefix,
   }
 }
 
@@ -653,11 +692,15 @@ const ensureSharedGlobalSettings = async (configPath = sharedGlobalSettingsPath(
   if (sharedRaw) {
     next = currentShared
   } else {
+    // Brand-new install (no prior config): ship removeUserPrefix=true so new
+    // users get the bare `<peerName>` peer. Existing configs take the `if` branch
+    // untouched and fall back to the false default, preserving their `user-<name>`
+    // peer.
     next = {
       peerName: currentUserName(),
       baseUrl: mergedHostSettings.baseUrl,
       hosts: {
-        opencode: hostDefaults(mergedHostSettings),
+        opencode: { ...hostDefaults(mergedHostSettings), removeUserPrefix: true },
       },
     }
     await writeSharedGlobalSettings(configPath, next)
@@ -754,8 +797,16 @@ const deriveRuntimeHandle = async (
   const sessionId = extractSessionId(input)
   const repoName = path.basename(rootDir)
   const workspaceId = normalizeId(settings.workspace || "opencode")
-  const userPeerId = normalizeId(`user:${settings.peerName || currentUserName()}`)
   const rootAgentPeerId = normalizeId(settings.aiPeer || "opencode")
+  // If the bare form collides with the agent peer (peerName === aiPeer), fall back
+  // to the prefixed form to keep user and agent memory distinct, rather than
+  // throwing on this hot path (deriveRuntimeHandle runs in unguarded hooks).
+  // assertDistinct only fires for a genuinely unresolvable config.
+  let userPeerId = deriveUserPeerId(settings)
+  if (userPeerId === rootAgentPeerId) {
+    userPeerId = normalizeId(`user:${settings.peerName || currentUserName()}`)
+  }
+  assertDistinctUserAndAgentPeers(userPeerId, rootAgentPeerId)
   const activeAgentPeerId = rootAgentPeerId
   const childAgentPeerId = null
   const parentAgentObserverPeerId = null
@@ -1062,6 +1113,7 @@ export const createHonchoRuntimePlugin =
         recallMode: handle.config.recallMode,
         sessionStrategy: handle.config.sessionStrategy,
         peerName: handle.config.peerName,
+        removeUserPrefix: handle.config.removeUserPrefix,
         configured: hasConfiguredAuth(handle.config),
         localMode: isLocalBaseUrl(handle.config.baseUrl),
         baseUrl: handle.config.baseUrl,
@@ -1667,6 +1719,8 @@ export const createHonchoRuntimePlugin =
 export const HonchoRuntimePlugin = createHonchoRuntimePlugin()
 export const __testing = {
   createSessionState,
+  deriveUserPeerId,
+  assertDistinctUserAndAgentPeers,
   deriveSessionStateKey,
   extractCompletedAssistantMessage,
   honchoSdkImportPath: "@honcho-ai/sdk",

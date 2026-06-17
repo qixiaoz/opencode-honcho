@@ -131,6 +131,7 @@ test("honcho_setup writes shared Honcho config with root peerName and hosts.open
         workspace: "opencode",
         recallMode: "hybrid",
         sessionStrategy: "per-directory",
+        removeUserPrefix: true,
       })
       expect("linkedHosts" in persisted.hosts.opencode).toBe(false)
       expect(result.persistedFields).toContain("peerName")
@@ -666,5 +667,79 @@ test("honcho_status uses the project worktree to derive per-directory session ke
     const result = JSON.parse(await hooks.tool.honcho_status.execute({}, toolContext(nestedDir)))
 
     expect(result.sessionKey).toBe("per-directory-opencode-services-api-opencode")
+  })
+})
+
+test("fresh install ships removeUserPrefix=true and drops the user- prefix", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "honcho-fresh-prefix-root-"))
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "honcho-fresh-prefix-home-"))
+  const sharedConfigPath = path.join(homeDir, ".honcho", "config.json")
+
+  await withEnv(
+    { HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined, HONCHO_PEER_NAME: "alice" },
+    async () => {
+      const hooks = await createPluginHarness(rootDir)
+      const result = JSON.parse(await hooks.tool.honcho_status.execute({}, toolContext(rootDir)))
+      const persisted = JSON.parse(await readFile(sharedConfigPath, "utf-8"))
+
+      expect(result.removeUserPrefix).toBe(true)
+      expect(result.peers.userPeer.id).toBe("alice")
+      expect(persisted.hosts.opencode.removeUserPrefix).toBe(true)
+    },
+  )
+})
+
+test("upgrading install (existing config) keeps removeUserPrefix=false and the user- prefix", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "honcho-legacy-prefix-root-"))
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "honcho-legacy-prefix-home-"))
+  const sharedConfigDir = path.join(homeDir, ".honcho")
+  const sharedConfigPath = path.join(sharedConfigDir, "config.json")
+
+  // Config predates removeUserPrefix — the false default must apply and the file
+  // must not be mutated on a plain status read.
+  await mkdir(sharedConfigDir, { recursive: true })
+  const initialConfig = {
+    peerName: "alice",
+    apiKey: "legacy-key",
+    baseUrl: "https://api.honcho.dev",
+    hosts: { opencode: { aiPeer: "opencode", workspace: "opencode" } },
+  }
+  await writeFile(sharedConfigPath, JSON.stringify(initialConfig, null, 2))
+
+  await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
+    const hooks = await createPluginHarness(rootDir)
+    const result = JSON.parse(await hooks.tool.honcho_status.execute({}, toolContext(rootDir)))
+    const persisted = JSON.parse(await readFile(sharedConfigPath, "utf-8"))
+
+    expect(result.removeUserPrefix).toBe(false)
+    expect(result.peers.userPeer.id).toBe("user-alice")
+    expect(persisted).toEqual(initialConfig)
+  })
+})
+
+test("a string removeUserPrefix is coerced at read time (a stray \"false\" stays on the prefixed peer)", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "honcho-coerce-root-"))
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "honcho-coerce-home-"))
+  await mkdir(path.join(homeDir, ".honcho"), { recursive: true })
+  const cfg = path.join(homeDir, ".honcho", "config.json")
+
+  await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
+    await writeFile(cfg, JSON.stringify({ peerName: "alice", hosts: { opencode: { removeUserPrefix: "false" } } }))
+    const result = JSON.parse(await (await createPluginHarness(rootDir)).tool.honcho_status.execute({}, toolContext(rootDir)))
+    expect(result.peers.userPeer.id).toBe("user-alice")
+  })
+})
+
+test("bare peer colliding with the agent peer falls back to the prefix instead of throwing", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "honcho-collide-root-"))
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "honcho-collide-home-"))
+  await mkdir(path.join(homeDir, ".honcho"), { recursive: true })
+  const cfg = path.join(homeDir, ".honcho", "config.json")
+
+  await withEnv({ HOME: homeDir, USER: "ignored-user", XDG_CONFIG_HOME: undefined }, async () => {
+    await writeFile(cfg, JSON.stringify({ peerName: "opencode", hosts: { opencode: { aiPeer: "opencode", removeUserPrefix: true } } }))
+    const result = JSON.parse(await (await createPluginHarness(rootDir)).tool.honcho_status.execute({}, toolContext(rootDir)))
+    expect(result.ok).toBe(true)
+    expect(result.peers.userPeer.id).toBe("user-opencode")
   })
 })
