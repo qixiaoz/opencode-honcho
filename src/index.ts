@@ -195,7 +195,7 @@ const trimHyphenEdges = (value: string) => {
 }
 
 const normalizeId = (value: string) =>
-  trimHyphenEdges(value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")) || "default"
+  trimHyphenEdges(value.replace(/[^a-zA-Z0-9_-]+/g, "-")) || "default"
 
 const isLocalBaseUrl = (value: string) => {
   if (!value.trim()) return false
