@@ -1077,6 +1077,7 @@ export const createHonchoRuntimePlugin =
   ({ configPath }: RuntimePluginOptions = {}): Plugin =>
   async (pluginInput) => {
     const sessionStates = new Map<string, SessionState>()
+    const sessionAgents = new Map<string, string>()
 
     const getState = (stateKey: string) => {
       let current = sessionStates.get(stateKey)
@@ -1103,7 +1104,22 @@ export const createHonchoRuntimePlugin =
       action: (runtime: ActiveRuntime) => Promise<T>,
       fallback: T,
     ) => {
+      // 注入快取 agent（message.updated 等 event 場景沒帶 agent）
+      const sessionId = extractSessionId(input)
+      if (sessionId && !extractAgent(input)) {
+        const cached = sessionAgents.get(sessionId)
+        if (cached) {
+          input = { ...input, agent: cached }
+        }
+      }
       const handle = await deriveRuntimeHandle(pluginInput, input, configPath)
+      // agent 不在 agentPeerMap 時 disable（默認 build/plan 不用 honcho）
+      const agentName = extractAgent(input)
+      if (agentName && isRecord(handle.config.agentPeerMap) && Object.keys(handle.config.agentPeerMap).length > 0) {
+        if (!resolveAgentPeer(agentName, handle.config)) {
+          return fallback
+        }
+      }
       if (!hasConfiguredAuth(handle.config)) {
         await log("warn", "Honcho runtime is missing an API key and is not configured for a localhost baseUrl.", {
           configPath: handle.configPath,
@@ -1388,6 +1404,9 @@ export const createHonchoRuntimePlugin =
         output.env.HONCHO_WORKSPACE_ID = handle.workspaceId
       },
       "chat.message": async (input, output) => {
+        if (input.agent) {
+          sessionAgents.set(input.sessionID, input.agent)
+        }
         const message = extractText(output.parts)
         if (!message || message.startsWith("/")) {
           return
