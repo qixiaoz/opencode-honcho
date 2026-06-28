@@ -27,6 +27,7 @@ type HonchoSettings = {
   recallMode: RecallMode
   sessionStrategy: SessionStrategy
   removeUserPrefix: boolean
+  agentPeerMap: Record<string, string>
 }
 
 type HostScopedSettings = Partial<
@@ -115,6 +116,7 @@ const DEFAULT_SETTINGS: HonchoSettings = {
   // keeps their `user-<peerName>` peer and its memory. New installs are stamped
   // true at config creation, and anyone can opt in by setting it true.
   removeUserPrefix: false,
+  agentPeerMap: {},
 }
 
 const INTERNAL_DIALECTIC_REASONING_LEVEL: DialecticReasoningLevel = "low"
@@ -144,6 +146,7 @@ const HOST_SETTING_FIELDS = new Set<keyof HonchoSettings>([
   "recallMode",
   "sessionStrategy",
   "removeUserPrefix",
+  "agentPeerMap",
 ])
 
 const SETTING_FIELD_PATHS = new Set([
@@ -155,6 +158,7 @@ const SETTING_FIELD_PATHS = new Set([
   "recallMode",
   "sessionStrategy",
   "removeUserPrefix",
+  "agentPeerMap",
 ])
 
 const DURABLE_PATTERNS = [
@@ -363,6 +367,10 @@ const applyRawLayer = (target: HonchoSettings, raw: Record<string, unknown>) => 
         value === true || (typeof value === "string" && value.trim().toLowerCase() === "true")
       continue
     }
+    if (key === "agentPeerMap" && isRecord(value)) {
+      ;(target as Record<string, unknown>)[key] = value
+      continue
+    }
     if (typeof value === "string") {
       const expanded = expandEnv(value)
       if (INHERITABLE_STRING_KEYS.has(key) && !expanded.trim()) {
@@ -554,6 +562,33 @@ const extractSessionId = (input: Record<string, unknown> | undefined) => {
   return "unknown-session"
 }
 
+const extractAgent = (input: Record<string, unknown> | undefined): string | undefined => {
+  const event = isRecord(input?.event) ? input.event : undefined
+  const eventProperties = isRecord(event?.properties) ? event.properties : undefined
+  const candidates = [input, eventProperties, isRecord(eventProperties?.info) ? eventProperties.info : undefined]
+
+  for (const candidate of candidates) {
+    const value = candidate?.agent
+    if (typeof value === "string" && value.length > 0) {
+      return value
+    }
+  }
+
+  return undefined
+}
+
+const resolveAgentPeer = (
+  agentName: string | undefined,
+  settings: Pick<HonchoSettings, "agentPeerMap">,
+): string | undefined => {
+  if (!agentName) return undefined
+  const map = settings.agentPeerMap
+  if (isRecord(map) && typeof map[agentName] === "string") {
+    return map[agentName] as string
+  }
+  return undefined
+}
+
 const deriveProjectRoot = (pluginInput: PluginInput) => {
   const hints = [pluginInput.directory, pluginInput.worktree, pluginInput.project?.worktree].filter(
     (value): value is string => Boolean(value),
@@ -602,6 +637,16 @@ const envSettings = (): Record<string, unknown> => ({
   peerName: process.env.HONCHO_PEER_NAME || "",
   workspace: process.env.HONCHO_WORKSPACE || process.env.HONCHO_WORKSPACE_ID || "",
   aiPeer: process.env.HONCHO_AI_PEER || "",
+  agentPeerMap: (() => {
+    const raw = process.env.HONCHO_AGENT_PEER_MAP
+    if (!raw) return undefined
+    try {
+      const parsed = JSON.parse(raw)
+      return isRecord(parsed) ? parsed : undefined
+    } catch {
+      return undefined
+    }
+  })(),
 })
 
 const resolveSettings = async (configPathOverride?: string) => {
@@ -781,9 +826,11 @@ const deriveRuntimeHandle = async (
   const rootDir = deriveProjectRoot(pluginInput)
   const { configPath, globalConfigPath, settings } = await resolveSettings(configPathOverride)
   const sessionId = extractSessionId(input)
+  const agentName = extractAgent(input)
+  const mappedPeer = resolveAgentPeer(agentName, settings)
   const repoName = path.basename(rootDir)
   const workspaceId = normalizeId(settings.workspace || "opencode")
-  const rootAgentPeerId = normalizeId(settings.aiPeer || "opencode")
+  const rootAgentPeerId = normalizeId(mappedPeer || settings.aiPeer || "opencode")
   // If the bare form collides with the agent peer (peerName === aiPeer), fall back
   // to the prefixed form to keep user and agent memory distinct, rather than
   // throwing on this hot path (deriveRuntimeHandle runs in unguarded hooks).
@@ -1442,7 +1489,7 @@ export const createHonchoRuntimePlugin =
           description: "Get the persisted and effective OpenCode Honcho settings, including workspace, peers, and session mapping.",
           args: { field: tool.schema.string().optional() },
           async execute(args, context) {
-            const status = await runtimeStatus({ ...args, sessionID: context.sessionID })
+            const status = await runtimeStatus({ ...args, sessionID: context.sessionID, agent: context.agent })
             if (args.field) {
               return JSON.stringify({ field: args.field, value: lookupField(status, args.field) }, null, 2)
             }
@@ -1461,7 +1508,7 @@ export const createHonchoRuntimePlugin =
           async execute(args, context) {
             let resolvedGlobalConfigPath = sharedGlobalSettingsPath()
             try {
-              const handle = await deriveRuntimeHandle(pluginInput, { sessionID: context.sessionID }, configPath)
+              const handle = await deriveRuntimeHandle(pluginInput, { sessionID: context.sessionID, agent: context.agent }, configPath)
               resolvedGlobalConfigPath = handle.globalConfigPath
               const shouldPersistGlobal = args.persistGlobal !== false
               const globalPersisted = (await readJsonFile(handle.globalConfigPath)) ?? {}
@@ -1525,7 +1572,7 @@ export const createHonchoRuntimePlugin =
                     : isLocalBaseUrl(effectiveBaseUrl)
                       ? `Honcho setup is ready for local mode at ${effectiveBaseUrl}.`
                       : "No Honcho API key is configured. Pass one to /honcho:setup <key> or set HONCHO_API_KEY before running setup. For a local Honcho instance, set baseUrl to http://127.0.0.1:8000 or http://localhost:8000.",
-                  status: await runtimeStatus({ sessionID: context.sessionID }),
+                  status: await runtimeStatus({ sessionID: context.sessionID, agent: context.agent }),
                 },
                 null,
                 2,
@@ -1549,7 +1596,7 @@ export const createHonchoRuntimePlugin =
           description: "Show effective Honcho status for this OpenCode project, including workspace, peers, sessions, and memory mode.",
           args: {},
           async execute(_args, context) {
-            return JSON.stringify(await runtimeStatus({ sessionID: context.sessionID }), null, 2)
+            return JSON.stringify(await runtimeStatus({ sessionID: context.sessionID, agent: context.agent }), null, 2)
           },
         }),
         honcho_set_config: tool({
@@ -1560,7 +1607,7 @@ export const createHonchoRuntimePlugin =
             confirm: tool.schema.boolean().optional(),
           },
           async execute(args, context) {
-            const handle = await deriveRuntimeHandle(pluginInput, { sessionID: context.sessionID }, configPath)
+            const handle = await deriveRuntimeHandle(pluginInput, { sessionID: context.sessionID, agent: context.agent }, configPath)
             let field: string
             try {
               field = parseSettingField(args.field)
@@ -1582,7 +1629,7 @@ export const createHonchoRuntimePlugin =
                 configPath: handle.configPath,
                 field,
                 value: nextValue,
-                status: await runtimeStatus({ sessionID: context.sessionID }),
+                status: await runtimeStatus({ sessionID: context.sessionID, agent: context.agent }),
               },
               null,
               2,
@@ -1598,7 +1645,7 @@ export const createHonchoRuntimePlugin =
           async execute(args, context) {
             return JSON.stringify(
               await withRuntime<SearchToolResult>(
-                { ...args, sessionID: context.sessionID },
+                { ...args, sessionID: context.sessionID, agent: context.agent },
                 async (runtime) => {
                   const messages = await runtime.session.search(args.query, {
                     limit: args.max_items ?? 5,
@@ -1627,7 +1674,7 @@ export const createHonchoRuntimePlugin =
           async execute(args, context) {
             return JSON.stringify(
               await withRuntime<ChatToolResult>(
-                { ...args, sessionID: context.sessionID },
+                { ...args, sessionID: context.sessionID, agent: context.agent },
                 async (runtime) => ({
                   ok: true,
                   workspace: runtime.workspaceId,
@@ -1650,7 +1697,7 @@ export const createHonchoRuntimePlugin =
           description: "Create a durable Honcho memory for this OpenCode project using the current peer and session mapping.",
           args: { content: tool.schema.string() },
           async execute(args, context) {
-            const handle = await deriveRuntimeHandle(pluginInput, { ...args, sessionID: context.sessionID }, configPath)
+            const handle = await deriveRuntimeHandle(pluginInput, { ...args, sessionID: context.sessionID, agent: context.agent }, configPath)
             if (!hasConfiguredAuth(handle.config)) {
               return JSON.stringify(
                 {
@@ -1665,7 +1712,7 @@ export const createHonchoRuntimePlugin =
             }
 
             try {
-              const runtime = await createActiveRuntime(pluginInput, { ...args, sessionID: context.sessionID }, configPath)
+              const runtime = await createActiveRuntime(pluginInput, { ...args, sessionID: context.sessionID, agent: context.agent }, configPath)
               const content = clampText(args.content.trim(), INTERNAL_DIALECTIC_MAX_CHARS)
               const created = await maybeWriteConclusion(runtime, content, "tool.create_conclusion")
               return JSON.stringify(
