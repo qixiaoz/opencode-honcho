@@ -127,7 +127,7 @@ const INTERNAL_CONTEXT_REFRESH: ContextRefreshSettings = {
   messageThreshold: 30,
   ttlSeconds: 300,
   skipTrivialPrompts: true,
-  useSessionStartDialectic: true,
+  useSessionStartDialectic: false,
 }
 
 const BOOLEAN_KEYS = new Set<keyof HonchoSettings>(["removeUserPrefix"])
